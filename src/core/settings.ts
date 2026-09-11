@@ -60,6 +60,19 @@ export interface PiVccSettings {
    * counting are all unaffected.
    */
   skipCustomTypes: string[];
+  /**
+   * Command names to record in a "[Commands Run]" section (e.g.
+   * `["ssh", "kubectl", "docker", "aws"]`) -- useful for infrastructure-
+   * operations sessions that don't touch a git repo or edit files, which
+   * otherwise get a much thinner compaction summary than a coding session.
+   * Each entry captures the command name plus everything up to the next
+   * real shell separator (`;`/`&`/`|`/newline), quote-stripped and
+   * truncated -- no per-command argument parsing, so there's nothing here
+   * to keep in sync as any given CLI's flags change. Also scans inside an
+   * `ssh host "<remote command>"` invocation's own remote string for any
+   * of the same tracked names. Empty by default (feature off).
+   */
+  trackCommands: string[];
 }
 
 export const DEFAULT_SETTINGS: PiVccSettings = {
@@ -69,6 +82,7 @@ export const DEFAULT_SETTINGS: PiVccSettings = {
   debug: false,
   skipForProviders: [],
   skipCustomTypes: [],
+  trackCommands: [],
 };
 
 const readJson = (path: string): Record<string, unknown> | null => {

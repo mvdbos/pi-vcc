@@ -157,7 +157,8 @@ Config lives at `~/.pi/agent/pi-vcc-config.json` (auto-scaffolded on first load 
   "continueAfterThresholdCompact": true,
   "debug": false,
   "skipForProviders": [],
-  "skipCustomTypes": []
+  "skipCustomTypes": [],
+  "trackCommands": []
 }
 ```
 
@@ -167,6 +168,7 @@ Config lives at `~/.pi/agent/pi-vcc-config.json` (auto-scaffolded on first load 
 - **`debug`** *(default `false`)*: when `true`, each compaction writes detailed info to `/tmp/pi-vcc-debug.json` — message counts, cut boundary, summary preview, sections, token estimate calibration.
 - **`skipForProviders`** *(default `[]`)*: providers pi-vcc defers compaction for, so a provider-specific compaction extension (e.g. remote compaction for OpenAI/Grok models) can take over instead. Matched exactly and case-insensitively against Pi's provider id — check `/model` for the actual id (Grok is `xai`, not `grok`). The check runs per compaction, so switching models mid-session works. Explicit `/pi-vcc` always bypasses the skip.
 - **`skipCustomTypes`** *(default `[]`)*: list of `customType` values whose `custom_message` entries are excluded from the summarizer input. Some extensions inject per-turn boilerplate via `custom_message` (e.g. skill cards, guidance blocks) that gets regenerated every turn — summarizing it wastes tokens and pollutes the summary. Match is exact and case-sensitive on `customType`; find an extension's value in your session file (`"type":"custom_message"` entries). Only the summary input is filtered: cut selection, token calibration, and kept-tail counting are unaffected. Extensions that inject ephemeral per-turn content should carry a stable `customType` so compactors can exclude them.
+- **`trackCommands`** *(default `[]`)*: command names to record in a `[Commands Run]` section, e.g. `["ssh", "kubectl", "docker", "aws"]` — useful for infrastructure-operations sessions that don't touch a git repo or edit files at all, which otherwise get a much thinner compaction summary than a coding session does. Each entry is a truncated one-line snapshot (command name plus everything up to the next real shell separator) rather than a parsed structure, so there's no per-command argument grammar to keep in sync as any given CLI's flags change. Also detects a tracked command nested inside an `ssh host "<command>"` remote-command string. Empty by default (feature off).
 
 ## Benchmarks
 
