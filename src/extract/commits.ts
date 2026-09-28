@@ -9,13 +9,35 @@ const COMMIT_MSG_RE = /git\s+commit[^\n]*?-m\s+(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\
 // Match short hash from git output: "[branch hash]" or "main hash" or 7-12 hex
 const HASH_RE = /\b([0-9a-f]{7,12})\b/;
 
+const cleanMessage = (msg: string): string =>
+  msg.replace(/\\"/g, '"').replace(/\\'/g, "'").trim();
+
+const linesOf = (text: string): string[] => text.split(/\\n|\n/);
+
 const firstLineOf = (text: string): string => {
-  const line = text.split(/\\n|\n/)[0] ?? "";
+  const line = linesOf(text)[0] ?? "";
   return line.trim();
 };
 
-const cleanMessage = (msg: string): string =>
-  msg.replace(/\\"/g, '"').replace(/\\'/g, "'").trim();
+// COMMIT_MSG_RE only yields the `$(cat <<...` opener (truncated at the inner quote for <<"DELIM"), so heredoc -m is re-read from the raw command.
+const HEREDOC_COMMIT_CMD_RE =
+  /git\s+commit[^\n"'&;|]*?-m\s+"\$\(cat\s+<<-?\s*(?:'([^']+)'|"([^"]+)"|([A-Za-z_]\w*))(?:\r?\n|\\n)/;
+
+const firstHeredocBodyLine = (rest: string, delim: string): string => {
+  for (const line of linesOf(rest)) {
+    const trimmed = line.replace(/^\t+/, "").trim();
+    if (trimmed === delim) break;
+    if (trimmed) return trimmed;
+  }
+  return "";
+};
+
+const subjectFromHeredocCmd = (cmd: string): string | null => {
+  const m = cmd.match(HEREDOC_COMMIT_CMD_RE);
+  if (!m) return null;
+  const delim = m[1] ?? m[2] ?? m[3] ?? "";
+  return cleanMessage(firstHeredocBodyLine(cmd.slice(m.index! + m[0].length), delim));
+};
 
 /**
  * Extract git commits from bash tool calls (`git commit -m "..."`) and pair
@@ -31,7 +53,12 @@ export const extractCommits = (blocks: NormalizedBlock[]): CommitInfo[] => {
     if (!/\bgit\s+commit\b/.test(cmd)) continue;
     const m = cmd.match(COMMIT_MSG_RE);
     if (!m) continue;
-    const message = firstLineOf(cleanMessage(m[1] ?? m[2] ?? m[3] ?? ""));
+    // First -m is `"$(cat <<DELIM ...`: COMMIT_MSG_RE only sees `$(cat <<...`, so read the heredoc body.
+    const heredoc = m[1] !== undefined && /^\$\(cat\s+<</.test(m[1])
+      ? subjectFromHeredocCmd(cmd.slice(m.index!))
+      : null;
+    const message = heredoc ?? firstLineOf(cleanMessage(m[1] ?? m[2] ?? m[3] ?? ""));
+    if (heredoc === null && /^\$\(cat\s+<</.test(message)) continue;
     if (!message) continue;
 
     let hash: string | undefined;
