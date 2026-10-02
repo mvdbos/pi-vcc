@@ -2,6 +2,12 @@
 
 All notable changes to `@sting8k/pi-vcc` are documented in this file.
 
+## [Unreleased]
+
+### Chores
+
+- **Smaller npm package** — `package.json` now has a `files` whitelist (`index.ts`, `src/`, `CHANGELOG.md`; npm adds `README.md`, `LICENSE`, `package.json`). The tarball no longer ships `demo.gif` (16.4 MB), `tests/`, `benchmarks/`, `scripts/`, `.github/` or `bun.lock`. The README demo image now uses an absolute GitHub URL so it still renders on npmjs.com.
+
 ## [0.8.1]
 
 ### Fixes
