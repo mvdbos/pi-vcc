@@ -1095,4 +1095,15 @@ describe("registerBeforeCompactHook: skipCustomTypes", () => {
     const snap = JSON.parse(readFileSync(DEBUG_PATH, "utf-8"));
     expect(JSON.stringify(snap)).toContain("INJECTED_BOILERPLATE_XYZ");
   });
+
+  // The tests above check the summarizer input; this one checks the summary
+  // itself. custom_message text does reach it (the hook's convertToLlm turns it
+  // into user content), which is what makes skipping worthwhile.
+  test("summary text: listed customType is absent, present when not listed", () => {
+    const off = runCompact([]);
+    const on = runCompact(["memory-inject"]);
+    expect(off.result.compaction.summary).toContain("INJECTED_BOILERPLATE_XYZ");
+    expect(on.result.compaction.summary.length).toBeGreaterThan(0);
+    expect(on.result.compaction.summary).not.toContain("INJECTED_BOILERPLATE_XYZ");
+  });
 });
