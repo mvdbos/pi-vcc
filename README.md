@@ -109,6 +109,7 @@ Sections appear only when relevant — a session with no git commits won't have 
 | `[Session Goal]` | Initial goal + scope changes (regex-based extraction) |
 | `[Files And Changes]` | Modified/created files from tool calls (capped, paths trimmed to common root) |
 | `[Commits]` | Git commits made during the session (last 8, hash + first line) |
+| `[Tracked Commands]` | Recent runs of only the commands listed in `trackCommands` (off by default) |
 | `[Outstanding Context]` | Unresolved items — errors, pending questions |
 | `[User Preferences]` | Regex-extracted from user messages (`always`, `never`, `prefer`...) |
 | Brief transcript | Chronological conversation flow — rolling window of ~120 recent lines, tool calls collapsed to one-liners with `(#N)` refs |
@@ -157,7 +158,8 @@ Config lives at `~/.pi/agent/pi-vcc-config.json` (auto-scaffolded on first load 
   "continueAfterThresholdCompact": true,
   "debug": false,
   "skipForProviders": [],
-  "skipCustomTypes": []
+  "skipCustomTypes": [],
+  "trackCommands": []
 }
 ```
 
@@ -167,6 +169,7 @@ Config lives at `~/.pi/agent/pi-vcc-config.json` (auto-scaffolded on first load 
 - **`debug`** *(default `false`)*: when `true`, each compaction writes detailed info to `/tmp/pi-vcc-debug.json` — message counts, cut boundary, summary preview, sections, token estimate calibration.
 - **`skipForProviders`** *(default `[]`)*: providers pi-vcc defers compaction for, so a provider-specific compaction extension (e.g. remote compaction for OpenAI/Grok models) can take over instead. Matched exactly and case-insensitively against Pi's provider id — check `/model` for the actual id (Grok is `xai`, not `grok`). The check runs per compaction, so switching models mid-session works. Explicit `/pi-vcc` always bypasses the skip.
 - **`skipCustomTypes`** *(default `[]`)*: list of `customType` values whose `custom_message` entries are excluded from the summarizer input. Some extensions inject per-turn boilerplate via `custom_message` (e.g. skill cards, guidance blocks) that gets regenerated every turn — summarizing it wastes tokens and pollutes the summary. Match is exact and case-sensitive on `customType`; find an extension's value in your session file (`"type":"custom_message"` entries). Only the summary input is filtered: cut selection, token calibration, and kept-tail counting are unaffected. Extensions that inject ephemeral per-turn content should carry a stable `customType` so compactors can exclude them.
+- **`trackCommands`** *(default `[]`)*: commands to remember across compactions, listed in a `[Tracked Commands]` section. Any command or prefix works: `["ssh", "kubectl", "docker"]`, `["psql", "./deploy.sh"]`, or `"gh pr"` (matches `gh pr merge`, not `gh run`). Each entry is the command as written, up to the next shell separator outside quotes, with any `sudo`/`env`/`VAR=` prefix kept; the 10 most recent per command are kept. Only `bash` calls are read, and only `ssh` remote commands are looked into, not `sh -c` or `docker exec`. Empty = off.
 
 ## Benchmarks
 

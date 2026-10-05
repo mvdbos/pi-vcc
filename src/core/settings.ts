@@ -60,6 +60,15 @@ export interface PiVccSettings {
    * counting are all unaffected.
    */
   skipCustomTypes: string[];
+  /**
+   * Commands whose bash invocations are kept in a "[Tracked Commands]" section,
+   * e.g. `["ssh", "kubectl"]`, `["psql"]`, or a prefix like `"gh pr"`. Each
+   * entry is the command as written up to the next unquoted separator
+   * (`;`/`&`/`|`/newline) -- no per-command argument parsing. Also scans an
+   * `ssh host "<remote command>"` string for the other tracked names.
+   * Empty by default (feature off).
+   */
+  trackCommands: string[];
 }
 
 export const DEFAULT_SETTINGS: PiVccSettings = {
@@ -69,6 +78,7 @@ export const DEFAULT_SETTINGS: PiVccSettings = {
   debug: false,
   skipForProviders: [],
   skipCustomTypes: [],
+  trackCommands: [],
 };
 
 const readJson = (path: string): Record<string, unknown> | null => {
@@ -91,6 +101,10 @@ export function loadSettings(): PiVccSettings {
   // where .includes becomes substring matching) into the provider check.
   merged.skipForProviders = coerceStringArray(parsed.skipForProviders);
   merged.skipCustomTypes = coerceStringArray(parsed.skipCustomTypes);
+  // Blank names would match every command; duplicates would repeat lines.
+  merged.trackCommands = [
+    ...new Set(coerceStringArray(parsed.trackCommands).map((s) => s.trim()).filter(Boolean)),
+  ];
   return merged;
 }
 
