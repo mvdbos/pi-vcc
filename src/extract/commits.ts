@@ -21,7 +21,7 @@ const firstLineOf = (text: string): string => {
 
 // COMMIT_MSG_RE only yields the `$(cat <<...` opener (truncated at the inner quote for <<"DELIM"), so heredoc -m is re-read from the raw command.
 const HEREDOC_COMMIT_CMD_RE =
-  /git\s+commit[^\n"'&;|]*?-m\s+"\$\(cat\s+<<-?\s*(?:'([^']+)'|"([^"]+)"|([A-Za-z_]\w*))(?:\r?\n|\\n)/;
+  /^git\s+commit[^\n"'&;|]*?-m\s+"\$\(cat\s+<<-?\s*(?:'([^']+)'|"([^"]+)"|([A-Za-z_]\w*))(?:\r?\n|\\n)/;
 
 const firstHeredocBodyLine = (rest: string, delim: string): string => {
   for (const line of linesOf(rest)) {

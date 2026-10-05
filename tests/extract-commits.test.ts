@@ -107,6 +107,13 @@ describe("extractCommits", () => {
     expect(extractCommits(blocks)).toEqual([{ hash: "5416801", message: "feat: add retry to upload client" }]);
   });
 
+  it("does not take a later commit's heredoc subject when the first one is unparsable", () => {
+    const blocks = commitBlocks(
+      `git commit --author="A <a@b>" -m "$(cat <<'EOF'\nfeat: one\nEOF\n)" && git commit -m "$(cat <<'EOF'\nfeat: two\nEOF\n)"`,
+    );
+    expect(extractCommits(blocks)).toEqual([]);
+  });
+
   it("extracts heredoc subject with --amend", () => {
     const blocks = commitBlocks(`git commit --amend -m "$(cat <<'EOF'\nfeat: add retry to upload client\nEOF\n)"`);
     expect(extractCommits(blocks)).toEqual([{ hash: "5416801", message: "feat: add retry to upload client" }]);
