@@ -267,13 +267,17 @@ const runRange = (range: unknown[], page: number, view: RecallView): string => {
   return formatRecallOutput(entries.slice(start, start + RANGE_PAGE_SIZE), undefined, header) + footer;
 };
 
+/**
+ * Search with the current turn left out of the corpus, not just out of the
+ * results: filtering afterwards let turn entries win the regex path (so the
+ * term fallback never ran), set the relative floor, and fill the hit cap,
+ * which hid earlier matches.
+ */
 const searchBefore = (view: RecallView, query: string, skip: Set<number> | undefined) => {
   const { rendered, rawMessages } = view.load(false);
-  const result = searchEntriesDetailed(rendered, rawMessages, query);
-  if (!skip?.size) return result;
-  // Filter after ranking so scores, and the order of everything kept, stay as they were.
-  const hits = result.hits.filter((h) => !skip.has(h.index));
-  return { ...result, hits, totalBeforeCap: result.totalBeforeCap - (result.hits.length - hits.length) };
+  if (!skip?.size) return searchEntriesDetailed(rendered, rawMessages, query);
+  const keep = rendered.map((m) => !skip.has(m.index));
+  return searchEntriesDetailed(rendered.filter((_, i) => keep[i]), rawMessages.filter((_, i) => keep[i]), query);
 };
 
 const runSearch = (query: string, page: number, view: RecallView, hints: RecallPagingHints, skip?: Set<number>): string => {

@@ -270,3 +270,34 @@ describe("vcc_recall search skips the current turn", () => {
     expect(out).toContain("#6 [user] what was the staging code");
   });
 });
+
+// ibis review: filtering the turn after ranking let the question win the regex
+// path (a "?" makes the query a regex), so the term search never ran.
+describe("vcc_recall search leaves the current turn out before ranking", () => {
+  it("finds the earlier answer when the agent searches with the question itself", async () => {
+    const entries = [
+      msg("u0", "user", "note this"),
+      msg("a1", "assistant", "The staging code is TEAL-ORCHID-42."),
+      msg("u2", "user", "What was the staging code?"),
+      msg("a3", "assistant", [{ type: "toolCall", id: "q1", name: "vcc_recall", arguments: { query: "What was the staging code?" } }]),
+    ];
+    const file = writeSession(entries);
+    const out = await recall(file, { query: "What was the staging code?" }, entries.map((e) => e.id));
+    expect(out).toContain("TEAL-ORCHID-42");
+    expect(out).not.toContain("No earlier matches");
+  });
+
+  it("does not let many current-turn hits fill the cap and hide an older one", async () => {
+    const turn = Array.from({ length: 60 }, (_, i) => msg(`t${i}`, "toolResult", [{ type: "text", text: `retry loop ${i}` }], { toolCallId: `c${i}`, toolName: "bash" }));
+    const entries = [
+      msg("u0", "user", "first"),
+      msg("a1", "assistant", "retry loop was decided here"),
+      msg("u2", "user", "again"),
+      msg("a3", "assistant", [{ type: "toolCall", id: "q", name: "vcc_recall", arguments: {} }]),
+      ...turn,
+    ];
+    const file = writeSession(entries);
+    const out = await recall(file, { query: "retry loop" }, entries.map((e) => e.id));
+    expect(out).toContain("#1 [assistant] retry loop was decided here");
+  });
+});
