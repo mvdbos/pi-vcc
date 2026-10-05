@@ -4,6 +4,11 @@
   "description": "Algorithmic conversation compactor for pi - transcript-preserving structured summaries, no LLM calls",
   "license": "MIT",
   "main": "index.ts",
+  "files": [
+    "index.ts",
+    "src/",
+    "CHANGELOG.md"
+  ],
   "keywords": [
     "pi-package",
     "pi-extension",

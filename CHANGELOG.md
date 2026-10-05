@@ -2,6 +2,16 @@
 
 All notable changes to `@sting8k/pi-vcc` are documented in this file.
 
+## [Unreleased]
+
+### Fixes
+
+- **Commit subjects from heredoc messages** — the summary's commits section showed the heredoc opener (`$(cat <<'EOF'`) instead of the real subject for `git commit -m "$(cat <<'EOF' ... EOF)"`, the form coding agents use for multi-line messages. The subject is now read from the heredoc body; an empty or unparsable heredoc is skipped rather than recorded as garbage. (#38, thanks @renyddd)
+
+### Chores
+
+- **Smaller npm package** — `package.json` now has a `files` whitelist (`index.ts`, `src/`, `CHANGELOG.md`; npm adds `README.md`, `LICENSE`, `package.json`). The tarball no longer ships `demo.gif` (16.4 MB), `tests/`, `benchmarks/`, `scripts/`, `.github/` or `bun.lock`. The README demo image now uses an absolute GitHub URL so it still renders on npmjs.com.
+
 ## [0.8.1]
 
 ### Fixes
