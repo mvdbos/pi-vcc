@@ -69,6 +69,9 @@ With the default `keep:1`, a small tail is grown automatically (see `smartKeepTa
 [Commits]
 - a1b2c3d: fix(auth): refresh token after password reset
 
+[Tracked Commands]
+- docker: docker compose restart api 2>&1
+
 [Outstanding Context]
 - lint check still failing on line 42
 
@@ -76,15 +79,23 @@ With the default `keep:1`, a small tail is grown automatically (see `smartKeepTa
 - Prefer Vietnamese responses
 - Always run tests before committing
 
+---
+
+...(28 earlier lines omitted)
+
 [user]
 Fix the auth bug, users can't log in after password reset
 
 [assistant]
-Root cause is a missing token refresh after password reset...
+Root cause is a missing token refresh after password reset... (#11)
 * bash "bun test tests/auth.test.ts" (#12)
 * edit "src/auth/session.ts" (#14)
+* bash "docker compose restart api 2>&1" (#15)
 * bash "bun test tests/auth.test.ts" (#16)
-...(28 earlier lines omitted)
+
+---
+
+Use `vcc_recall` to search for prior work, decisions, and context from before this summary. Do not redo work already completed.
 ```
 
 A section only appears when it has something to say; a session with no git commits has no `[Commits]`.
