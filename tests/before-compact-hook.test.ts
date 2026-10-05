@@ -1107,3 +1107,38 @@ describe("registerBeforeCompactHook: skipCustomTypes", () => {
     expect(on.result.compaction.summary).not.toContain("INJECTED_BOILERPLATE_XYZ");
   });
 });
+
+describe("registerBeforeCompactHook: trackCommands", () => {
+  afterEach(() => {
+    if (existsSync(CONFIG_PATH)) unlinkSync(CONFIG_PATH);
+  });
+
+  // The setting must reach the summary through the real hook path:
+  // config file -> loadSettings -> compile -> [Tracked Commands].
+  const bashCall = (id: string, command: string) => ({
+    id,
+    type: "message",
+    message: { role: "assistant", content: [{ type: "toolCall", id: `t-${id}`, name: "bash", arguments: { command } }] },
+  });
+  const entries = () => [
+    msg("u0", "user", "start"),
+    bashCall("a0", "docker ps -a 2>&1"),
+    msg("u1", "user", "go"),
+    msg("a1", "assistant", "reply"),
+    msg("u2", "user", "next"),
+    msg("a2", "assistant", "done"),
+    msg("u3", "user", "more"),
+    msg("a3", "assistant", "ok"),
+  ];
+  const summaryWith = (cfg: Record<string, unknown>) => {
+    setConfig({ overrideDefaultCompaction: true, ...cfg });
+    const { pi, invokeBefore } = createMockPi();
+    registerBeforeCompactHook(pi);
+    return invokeBefore(makeEvent(entries())).compaction.summary as string;
+  };
+
+  test("listed commands appear in [Tracked Commands]; no section by default", () => {
+    expect(summaryWith({ trackCommands: ["docker"] })).toContain("[Tracked Commands]\n- docker: docker ps -a 2>&1");
+    expect(summaryWith({})).not.toContain("[Tracked Commands]");
+  });
+});
