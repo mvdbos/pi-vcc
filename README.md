@@ -125,6 +125,17 @@ vcc_recall({ query: "hook|inject" })                 // regex
 vcc_recall({ query: "auth token", scope: "all" })    // all lineages
 ```
 
+The `#N` refs in a summary, such as `(#1253)`, are the same numbers recall uses, so the agent can go straight to them:
+
+```
+vcc_recall({ range: [1250, 1290] })                  // entries in order, 20 per page
+vcc_recall({ expand: [1253] })                       // full untruncated text
+vcc_recall({ mode: "touched" })                      // files worked on, with #N
+vcc_recall({ query: "#1253:auth.ts" })               // a file's content from #1253
+```
+
+Each call does one of these. `page` and `scope` work with all of them, and a param the call cannot use is named in the output instead of dropped silently.
+
 The same search as a slash command, with results shown in the chat and passed to the agent:
 
 ```

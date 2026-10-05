@@ -16,37 +16,45 @@ export const registerRecallTool = (pi: ExtensionAPI) => {
   pi.registerTool({
     name: "vcc_recall",
     label: "VCC Recall",
-    description:
-      "Recall earlier parts of the current session — decisions made, files touched, commands run, " +
-      "including anything dropped by compaction. Reach for this before telling the user you no longer " +
-      "have the context. Plain keywords work best; a regex pattern is also accepted. Results are paged " +
-      "(page); pass expand with entry indices to read full untruncated content. Use range:[from, to] to " +
-      "read every entry between two #N indices in order. Use mode:'touched' to " +
-      "list files worked on in this session with their entry indices, and #N:path to drill into a file's " +
-      "content from an entry (#N:path:full for all lines). Note: apply_patch paths (inside the diff " +
-      "payload) and bash redirects do not appear in the touched index. Only the current session is " +
-      "searchable — earlier sessions are not.",
+    description: [
+      "Recall earlier parts of this session, including anything dropped by compaction.",
+      "Use it before saying the context is gone.",
+      "",
+      "Pick one per call:",
+      "- query: keyword search (regex works), 5 results per page.",
+      "- range: [from, to]: entries #from..#to in order, 20 per page.",
+      "- expand: [N, ...]: full untruncated text of those entries.",
+      "- mode: 'touched': files worked on, with entry indices.",
+      "- query '#N:path': file content from entry N ('#N:path:full' for all lines).",
+      "",
+      "Add to any of them:",
+      "- page: next page of query, range or touched results.",
+      "- scope: 'lineage' (default) reads the current conversation path; 'all' also",
+      "  reads edited or retried branches.",
+      "",
+      "#N is the number shown in summary refs like (#12) and in recall results.",
+      "Only the current session is searchable.",
+    ].join("\n"),
     promptSnippet:
       "vcc_recall: recall earlier parts of this session before saying the context is gone. " +
-      "Plain keywords work best; scope:'all' widens to other conversation branches. " +
-      "range:[from, to] reads the entries between two #N indices in order. " +
-      "mode:'touched' lists files worked on; #N:path drills into a file's content from an entry.",
+      "One per call: query (search), range:[from, to] (entries in order), expand:[N] (full text), " +
+      "mode:'touched' (files). #N is the number in summary refs like (#12).",
     parameters: Type.Object({
       query: Type.Optional(
-        Type.String({ description: "What to recall, in plain keywords (e.g. 'redis cache decision'). Multi-word queries are ranked by relevance. A regex pattern also works." }),
+        Type.String({ description: "What to recall, in plain keywords (e.g. 'redis cache decision'). Multi-word queries are ranked by relevance. A regex pattern also works. '#N:path' instead shows a file's content from entry N." }),
       ),
       range: Type.Optional(
         Type.Array(Type.Number(), {
           minItems: 2,
           maxItems: 2,
-          description: "[from, to]: read every entry from #from to #to (inclusive) in order, 20 per page. Use the #N numbers shown in the summary or in recall results.",
+          description: "[from, to]: every entry from #from to #to (inclusive) in order, 20 per page. #N is the number in summary refs like (#12) and in recall results.",
         }),
       ),
       expand: Type.Optional(
-        Type.Array(Type.Number(), { description: "Entry indices to return full untruncated content for" }),
+        Type.Array(Type.Number(), { description: "#N indices to return full untruncated content for (from summary refs like (#12) or recall results)." }),
       ),
       page: Type.Optional(
-        Type.Number({ description: "Page number (1-based) for paginated search or range results. Default: 1." }),
+        Type.Number({ description: "Page number (1-based) for query, range or touched results. Default: 1." }),
       ),
       scope: Type.Optional(
         Type.Union([
@@ -58,7 +66,7 @@ export const registerRecallTool = (pi: ExtensionAPI) => {
         Type.Union([
           Type.Literal("hybrid"),
           Type.Literal("touched"),
-        ], { description: "What to show. hybrid (default) = normal search; touched = aggregated files-by-path with entry indices." }),
+        ], { description: "hybrid (default) = normal recall; touched = files worked on, by path, with entry indices. The touched list misses files written via apply_patch (paths inside the diff) or bash redirects." }),
       ),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {

@@ -2,6 +2,21 @@
 
 All notable changes to `@sting8k/pi-vcc` are documented in this file.
 
+## [Unreleased]
+
+### Features
+
+- **`vcc_recall` reads a range** — `range: [from, to]` returns entries `#from..#to` in order, 20 per page, so the agent can read what happened around a summary ref like `(#1253)` without guessing search terms or expanding each entry in full. Idea and first version by @Renno231 (#20).
+- **No more silently dropped params** — when a call sets a param its action cannot use (e.g. `query` next to `expand`), the output names it on the first line. Default values such as `page: 1` are not reported.
+
+### Changed
+
+- **Clearer `vcc_recall` description** — lists the actions that each take a whole call (query, range, expand, touched, `#N:path`) apart from the params that work with all of them (page, scope), and says where `#N` comes from.
+
+### Internal
+
+- `vcc_recall` and `/pi-vcc-recall` share one pipeline (`src/core/recall-request.ts`, `src/core/recall-run.ts`): one place picks the action, scope is applied once, and the command no longer copies the tool's search and paging code. Replaying 1,086 real recall calls gives byte-identical output apart from the new note.
+
 ## [0.9.0]
 
 ### Features
