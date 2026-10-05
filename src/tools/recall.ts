@@ -10,6 +10,8 @@ const TOOL_PAGING_HINTS: RecallPagingHints = {
     ? `Use a page between 1 and ${totalPages}.`
     : `Use a page between 1 and ${totalPages}, or refine your query.`,
   nextPage: (_query, scope, page) => `\n--- Use page:${page}${scope === "all" ? " with scope:'all'" : ""} for more results ---`,
+  aroundHit: (n, scope) =>
+    `\n--- Read around a hit: range:[${Math.max(0, n - 3)}, ${n + 3}]; full text: expand:[${n}]${scope === "all" ? " (with scope:'all')" : ""} ---`,
 };
 
 export const registerRecallTool = (pi: ExtensionAPI) => {

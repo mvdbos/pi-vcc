@@ -1,10 +1,11 @@
 import { loadAllMessages, type LoadedMessages } from "./load-messages";
-import { searchEntriesDetailed, getTouchedFiles } from "./search-entries";
-import { formatRecallOutput, formatTouchedOutput } from "./format-recall";
+import { searchEntriesDetailed, getTouchedFiles, type SearchHit } from "./search-entries";
+import { formatRecallOutput, formatTouchedOutput, TOUCHED_PAGE_SIZE } from "./format-recall";
 import { getActiveLineageEntryIds, type LineageSessionManagerLike } from "./lineage";
 import { expandEntryFile } from "./drill-down";
 import type { RecallScope } from "./recall-scope";
 import type { RecallRequest } from "./recall-request";
+import type { Message } from "@earendil-works/pi-ai";
 
 export const SEARCH_PAGE_SIZE = 5;
 export const RANGE_PAGE_SIZE = 20;
@@ -18,6 +19,8 @@ export interface RecallView {
   sessionFile: string;
   scope: RecallScope;
   load(full: boolean): LoadedMessages;
+  /** The same session with scope:'all' (itself when already 'all'). */
+  widen(): RecallView;
 }
 
 export const openRecallView = (
@@ -27,7 +30,8 @@ export const openRecallView = (
 ): RecallView => {
   const lineageEntryIds = scope === "lineage" ? getActiveLineageEntryIds(sessionManager) : undefined;
   const cache = new Map<boolean, LoadedMessages>();
-  return {
+  let wide: RecallView | undefined;
+  const view: RecallView = {
     sessionFile,
     scope,
     load(full) {
@@ -38,8 +42,21 @@ export const openRecallView = (
       }
       return loaded;
     },
+    widen() {
+      if (scope === "all") return view;
+      return (wide ??= openRecallView(sessionFile, "all", sessionManager));
+    },
   };
+  return view;
 };
+
+/**
+ * When the current conversation path has nothing for a query, range or
+ * #N:path, recall answers from edited or retried branches instead and says so
+ * on the first line. An explicit scope:'all' never needs this.
+ */
+const OFF_PATH_NOTE =
+  "Nothing on the current conversation path; showing edited or retried branches (scope:'all').\n\n";
 
 export const invalidExpandIndices = (requested: number[], available: Set<number>): number[] =>
   requested.filter((i) => !Number.isInteger(i) || !available.has(i));
@@ -48,6 +65,8 @@ export const invalidExpandIndices = (requested: number[], available: Set<number>
 export interface RecallPagingHints {
   outOfRange(query: string, scope: RecallScope, totalPages: number, truncated: boolean): string;
   nextPage(query: string, scope: RecallScope, page: number): string;
+  /** Next step after a search page, pointing at its first hit. The command has none. */
+  aroundHit?(index: number, scope: RecallScope): string;
 }
 
 const IGNORED_REASON: Record<RecallRequest["action"]["kind"], string> = {
@@ -74,30 +93,19 @@ const runAction = (request: RecallRequest, view: RecallView, hints: RecallPaging
 
   switch (action.kind) {
     case "drill": {
-      // Honors scope like every other recall path: the target entry must be on
-      // the active lineage unless scope:'all'. expandEntryFile keeps loading
-      // unfiltered so #N stays aligned with the global message index.
+      // expandEntryFile loads unfiltered so #N stays aligned with the global
+      // message index; scope only decides whether the entry is off-path.
       const t = action.target;
-      if (!scopeAll && !view.load(false).rendered.some((m) => m.index === t.index)) {
-        return `Cannot expand indices outside active lineage: ${t.index}. Use scope:'all' to reach other branches.`;
-      }
-      return expandEntryFile(view.sessionFile, t.index, t.pathPattern, t.full, t.offset, t.limit);
+      const offPath = !scopeAll && !view.load(false).rendered.some((m) => m.index === t.index);
+      return (offPath ? OFF_PATH_NOTE : "") +
+        expandEntryFile(view.sessionFile, t.index, t.pathPattern, t.full, t.offset, t.limit);
     }
 
-    case "touched": {
-      const { rendered, rawMessages } = view.load(false);
-      return formatTouchedOutput(getTouchedFiles(rawMessages, rendered), action.page);
-    }
+    case "touched":
+      return runTouched(action.page, view);
 
-    case "expand": {
-      const byIndex = new Map(view.load(true).rendered.map((m) => [m.index, m]));
-      const invalid = invalidExpandIndices(action.indices, new Set(byIndex.keys()));
-      if (invalid.length > 0) {
-        return `Cannot expand indices outside ${scopeAll ? "session history" : "active lineage"}: ${invalid.join(", ")}`;
-      }
-      const expanded = action.indices.map((i) => byIndex.get(i)).filter((m): m is NonNullable<typeof m> => Boolean(m));
-      return (scopeAll ? "Scope: all\n\n" : "") + formatRecallOutput(expanded);
-    }
+    case "expand":
+      return runExpand(action.indices, view);
 
     case "range":
       return runRange(action.range, action.page, view);
@@ -112,6 +120,64 @@ const runAction = (request: RecallRequest, view: RecallView, hints: RecallPaging
   }
 };
 
+/** Tool output shown with an expanded call, clipped so one expand cannot flood the context. */
+export const PAIRED_RESULT_CHARS = 4000;
+
+const toolCallIds = (msg: Message | undefined): string[] =>
+  msg?.role === "assistant" && Array.isArray(msg.content)
+    ? msg.content.flatMap((b: any) => (b?.type === "toolCall" && typeof b.id === "string" ? [b.id] : []))
+    : [];
+
+/**
+ * Full text of the requested entries. An expanded tool call brings its tool
+ * results along (matched by toolCallId, clipped to PAIRED_RESULT_CHARS), so
+ * the agent does not have to know the result sits at a later #N. Entries off
+ * the current path are served from the whole session and named in a note.
+ */
+const runExpand = (indices: number[], view: RecallView): string => {
+  const pools = view.scope === "all" ? [view] : [view, view.widen()];
+  const lookup = (i: number) => {
+    for (const v of pools) {
+      const { rendered, rawMessages } = v.load(true);
+      const pos = rendered.findIndex((m) => m.index === i);
+      if (pos >= 0) return { entry: rendered[pos], raw: rawMessages[pos], v, pos };
+    }
+    return undefined;
+  };
+
+  const found = indices.map((i) => ({ i, hit: Number.isInteger(i) ? lookup(i) : undefined }));
+  const invalid = found.filter((f) => !f.hit).map((f) => f.i);
+  if (invalid.length > 0) return `Cannot expand indices outside session history: ${invalid.join(", ")}`;
+
+  const offPath = found.filter((f) => f.hit!.v !== view).map((f) => `#${f.i}`);
+  const requested = new Set(indices);
+  const out: SearchHit[] = [];
+  for (const { hit } of found) {
+    const { entry, raw, v, pos } = hit!;
+    out.push(entry);
+    const ids = new Set(toolCallIds(raw));
+    if (ids.size === 0) continue;
+    const { rendered, rawMessages } = v.load(true);
+    for (let j = pos + 1; j < rendered.length && ids.size > 0; j++) {
+      const r = rawMessages[j] as any;
+      if (r?.role !== "toolResult" || !ids.has(r.toolCallId)) continue;
+      ids.delete(r.toolCallId);
+      const res = rendered[j];
+      if (requested.has(res.index)) continue;
+      const summary = res.summary.length > PAIRED_RESULT_CHARS
+        ? `${res.summary.slice(0, PAIRED_RESULT_CHARS)}\n...[result of #${entry.index} clipped at ${PAIRED_RESULT_CHARS} of ${res.summary.length} chars; expand:[${res.index}] for all of it]`
+        : res.summary;
+      out.push({ ...res, summary });
+    }
+  }
+
+  const header = `Expanded ${indices.map((i) => `#${i}`).join(", ")}`;
+  const note = offPath.length > 0
+    ? `${offPath.join(", ")} ${offPath.length === 1 ? "is" : "are"} not on the current conversation path (edited or retried branch).\n\n`
+    : "";
+  return (view.scope === "all" ? "Scope: all\n\n" : "") + note + formatRecallOutput(out, undefined, header);
+};
+
 /**
  * Entries #from..#to in order, RANGE_PAGE_SIZE per page, same per-entry clip
  * as search and recent. Indices are the global #N space shared with summaries
@@ -122,21 +188,30 @@ const runRange = (range: unknown[], page: number, view: RecallView): string => {
   if (range.length !== 2 || !Number.isInteger(from) || !Number.isInteger(to) || (from as number) < 0 || (from as number) > (to as number)) {
     return `Invalid range ${JSON.stringify(range)}: use range:[from, to] with two #N indices, from <= to.`;
   }
-  const lo = from as number, hi = to as number;
+  const lo = from as number;
+  let hi = to as number;
   const scopeAll = view.scope === "all";
   const { rendered } = view.load(false);
-  const entries = rendered.filter((m) => m.index >= lo && m.index <= hi);
+  let entries = rendered.filter((m) => m.index >= lo && m.index <= hi);
 
   if (entries.length === 0) {
-    if (!scopeAll && loadAllMessages(view.sessionFile, false).rendered.some((m) => m.index >= lo && m.index <= hi)) {
-      return `No messages #${lo}..#${hi} on the active lineage; they are on another branch. Use scope:'all' to reach them.`;
+    if (!scopeAll) {
+      const wide = view.widen();
+      if (wide.load(false).rendered.some((m) => m.index >= lo && m.index <= hi)) {
+        return OFF_PATH_NOTE + runRange(range, page, wide);
+      }
     }
     const last = rendered[rendered.length - 1];
     return `No messages #${lo}..#${hi} in session history${last ? ` (last entry is #${last.index})` : ""}.`;
   }
 
+  // A range past the end is read up to the last entry, and the header says so.
+  const lastIndex = rendered[rendered.length - 1].index;
+  const clamped = hi > lastIndex;
+  if (clamped) hi = lastIndex;
+
   const totalPages = Math.ceil(entries.length / RANGE_PAGE_SIZE);
-  const counts = `${entries.length} messages${scopeAll ? ", scope: all" : ""}`;
+  const counts = `${entries.length} messages${scopeAll ? ", scope: all" : ""}${clamped ? `, #${hi} is the last entry` : ""}`;
   if (page > totalPages) {
     return `Page ${page} is outside the available range 1-${totalPages} (#${lo}..#${hi}: ${counts}). Use a page between 1 and ${totalPages}.`;
   }
@@ -153,6 +228,13 @@ const runRange = (range: unknown[], page: number, view: RecallView): string => {
 const runSearch = (query: string, page: number, view: RecallView, hints: RecallPagingHints): string => {
   const { rendered, rawMessages } = view.load(false);
   const { hits, totalBeforeCap, truncated } = searchEntriesDetailed(rendered, rawMessages, query);
+  if (hits.length === 0 && view.scope === "lineage") {
+    const wide = view.widen();
+    const w = wide.load(false);
+    if (searchEntriesDetailed(w.rendered, w.rawMessages, query).hits.length > 0) {
+      return OFF_PATH_NOTE + runSearch(query, page, wide, hints);
+    }
+  }
   // Single source of truth for page count: hits.length, the same array
   // that's actually paginated below (already floor-filtered and capped).
   const totalPages = Math.ceil(hits.length / SEARCH_PAGE_SIZE);
@@ -175,9 +257,28 @@ const runSearch = (query: string, page: number, view: RecallView, hints: RecallP
   }
 
   const start = (page - 1) * SEARCH_PAGE_SIZE;
+  const pageHits = hits.slice(start, start + SEARCH_PAGE_SIZE);
   const header = totalPages > 1
     ? `Page ${page}/${totalPages} (${hits.length} total matches${scopeSuffix}${truncationNote})`
     : `${hits.length} matches${scopeSuffix}${truncationNote}`;
+  const around = pageHits.length > 0 && hints.aroundHit ? hints.aroundHit(pageHits[0].index, view.scope) : "";
   const footer = page < totalPages ? hints.nextPage(query, view.scope, page + 1) : "";
-  return formatRecallOutput(hits.slice(start, start + SEARCH_PAGE_SIZE), query, header) + footer;
+  return formatRecallOutput(pageHits, query, header) + around + footer;
+};
+
+const WRITES_FILE = /write|edit|patch/i;
+
+/** Files worked on, plus a ready #N:path call for the first file on the page that was written. */
+const runTouched = (page: number | undefined, view: RecallView): string => {
+  const { rendered, rawMessages } = view.load(false);
+  const touched = getTouchedFiles(rawMessages, rendered);
+  const text = formatTouchedOutput(touched, page);
+  const start = (Math.max(1, page ?? 1) - 1) * TOUCHED_PAGE_SIZE;
+  for (const tf of touched.slice(start, start + TOUCHED_PAGE_SIZE)) {
+    const write = [...tf.entries].reverse().find((e) => WRITES_FILE.test(e.toolName));
+    if (!write) continue;
+    const name = tf.path.replace(/\\/g, "/").split("/").pop();
+    return `${text}\n--- File content at an entry: query:'#${write.index}:${name}' ---`;
+  }
+  return text;
 };

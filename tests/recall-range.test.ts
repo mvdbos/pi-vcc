@@ -69,7 +69,7 @@ describe("vcc_recall range", () => {
     expect(out).not.toContain("tool loadout");
   });
 
-  it("honors scope: off-lineage entries need scope:'all'", async () => {
+  it("honors scope: off-lineage entries only through the labelled fallback or scope:'all'", async () => {
     const entries = [msg("m0", "user", "live"), msg("m1", "assistant", "edited away"), msg("m2", "assistant", "live reply")];
     const file = writeSession(entries);
     const branch = ["m0", "m2"];
@@ -79,8 +79,8 @@ describe("vcc_recall range", () => {
     expect(lineage).not.toContain("edited away");
 
     const onlyOff = await recall(file, { range: [1, 1] }, branch);
-    expect(onlyOff).toContain("another branch");
-    expect(onlyOff).toContain("scope:'all'");
+    expect(onlyOff.startsWith("Nothing on the current conversation path")).toBe(true);
+    expect(onlyOff).toContain("#1 [assistant] edited away");
 
     const all = await recall(file, { range: [1, 1], scope: "all" }, branch);
     expect(all).toContain("#1 [assistant] edited away");
@@ -117,6 +117,13 @@ describe("vcc_recall range", () => {
     expect(await recall(file, { range: [10, 20] }, ids)).toBe("No messages #10..#20 in session history (last entry is #2).");
   });
 
+  it("reads a range past the end up to the last entry and says so", async () => {
+    const entries = linear(5);
+    const file = writeSession(entries);
+    const out = await recall(file, { range: [3, 100] }, entries.map((e) => e.id));
+    expect(out.startsWith("Range #3..#4 (2 messages, #4 is the last entry):")).toBe(true);
+  });
+
   // f6c270e: entries without content (bashExecution) used to crash recall.
   it("renders entries without content", async () => {
     const entries = [msg("m0", "user", "run it"), { type: "message", id: "b1", message: { role: "bashExecution", command: "ls", output: "a.txt" } }, msg("m2", "assistant", undefined)];
@@ -136,5 +143,57 @@ describe("vcc_recall range", () => {
     const ranged = await recall(file, { range: [0, 1], query: "entry" }, ids);
     expect(ranged.startsWith("Ignored: query (range runs alone")).toBe(true);
     expect(ranged).toContain("Range #0..#1 (2 messages):");
+  });
+});
+
+const call = (id: string, callId: string, cmd: string) =>
+  msg(id, "assistant", [{ type: "toolCall", id: callId, name: "bash", arguments: { command: cmd } }]);
+const result = (id: string, callId: string, text: string) =>
+  msg(id, "toolResult", [{ type: "text", text }], { toolCallId: callId, toolName: "bash" });
+
+describe("vcc_recall expand pairs a tool call with its result", () => {
+  it("brings the result along, clipped, without repeating requested entries", async () => {
+    const entries = [
+      msg("u0", "user", "check the logs"),
+      call("a1", "c1", "tail app.log"),
+      msg("u2", "user", "interleaved"),
+      result("r3", "c1", "line\n".repeat(2000)),
+      call("a4", "c2", "ls"),
+      result("r5", "c2", "a.txt"),
+    ];
+    const file = writeSession(entries);
+    const ids = entries.map((e) => e.id);
+
+    const out = await recall(file, { expand: [1] }, ids);
+    expect(out.startsWith("Expanded #1:")).toBe(true);
+    expect(out).toContain("#3 [tool_result] [bash] line");
+    expect(out).toContain("[result of #1 clipped at 4000 of 10007 chars; expand:[3] for all of it]");
+    expect(out).not.toContain("interleaved");
+
+    const both = await recall(file, { expand: [4, 5] }, ids);
+    expect(both.match(/#5 \[tool_result\]/g)?.length).toBe(1);
+    expect(both).not.toContain("clipped");
+
+    const plainResult = await recall(file, { expand: [3] }, ids);
+    expect(plainResult).toContain("#3 [tool_result]");
+    expect(plainResult).not.toContain("tail app.log");
+  });
+});
+
+describe("vcc_recall next-step hints", () => {
+  it("search points at its first hit; touched points at a written file", async () => {
+    const entries = [
+      msg("u0", "user", "fix the redis cache"),
+      msg("a1", "assistant", [{ type: "toolCall", id: "w1", name: "write", arguments: { path: "/repo/src/cache.ts", content: "x" } }]),
+      msg("r2", "toolResult", [{ type: "text", text: "ok" }], { toolCallId: "w1", toolName: "write" }),
+    ];
+    const file = writeSession(entries);
+    const ids = entries.map((e) => e.id);
+
+    const found = await recall(file, { query: "redis" }, ids);
+    expect(found).toContain("--- Read around a hit: range:[0, 3]; full text: expand:[0] ---");
+
+    const touched = await recall(file, { mode: "touched" }, ids);
+    expect(touched).toContain("--- File content at an entry: query:'#1:cache.ts' ---");
   });
 });
