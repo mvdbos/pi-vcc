@@ -147,7 +147,10 @@ const mergePrevious = (prev: string, fresh: string, options: { preserveFreshBrie
   const headers = HEADER_NAMES
     .map((header) => {
       const freshSec = sectionOf(fresh, header);
-      const prevSec = sectionOf(prev, header);
+      // The stored summary went through wrapLongLines; rejoin each item's
+      // indented continuation lines so the per-section merges, which read
+      // only "- " lines, see whole items.
+      const prevSec = sectionOf(prev, header).replace(/\n[ \t]+(?=\S)/g, " ");
       return mergeHeaderSection(header, prevSec, freshSec);
     })
     .filter(Boolean);
