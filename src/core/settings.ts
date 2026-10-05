@@ -61,16 +61,12 @@ export interface PiVccSettings {
    */
   skipCustomTypes: string[];
   /**
-   * Command names to record in a "[Commands Run]" section (e.g.
-   * `["ssh", "kubectl", "docker", "aws"]`) -- useful for infrastructure-
-   * operations sessions that don't touch a git repo or edit files, which
-   * otherwise get a much thinner compaction summary than a coding session.
-   * Each entry captures the command name plus everything up to the next
-   * real shell separator (`;`/`&`/`|`/newline), quote-stripped and
-   * truncated -- no per-command argument parsing, so there's nothing here
-   * to keep in sync as any given CLI's flags change. Also scans inside an
-   * `ssh host "<remote command>"` invocation's own remote string for any
-   * of the same tracked names. Empty by default (feature off).
+   * Commands whose bash invocations are kept in a "[Commands Run]" section,
+   * e.g. `["ssh", "kubectl"]`, `["psql"]`, or a prefix like `"gh pr"`. Each
+   * entry is the command as written up to the next unquoted separator
+   * (`;`/`&`/`|`/newline) -- no per-command argument parsing. Also scans an
+   * `ssh host "<remote command>"` string for the other tracked names.
+   * Empty by default (feature off).
    */
   trackCommands: string[];
 }
@@ -105,6 +101,10 @@ export function loadSettings(): PiVccSettings {
   // where .includes becomes substring matching) into the provider check.
   merged.skipForProviders = coerceStringArray(parsed.skipForProviders);
   merged.skipCustomTypes = coerceStringArray(parsed.skipCustomTypes);
+  // Blank names would match every command; duplicates would repeat lines.
+  merged.trackCommands = [
+    ...new Set(coerceStringArray(parsed.trackCommands).map((s) => s.trim()).filter(Boolean)),
+  ];
   return merged;
 }
 

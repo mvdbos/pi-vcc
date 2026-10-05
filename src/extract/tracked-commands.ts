@@ -4,50 +4,113 @@ import type { NormalizedBlock } from "../types";
  * parsed structure -- deliberately shallow, see module docstring below). */
 const MAX_ENTRY_CHARS = 80;
 
-const stripQuotes = (s: string): string => s.replace(/^["'`]+/, "").replace(/["'`]+$/, "");
-
-/** Cut `text` at the next real shell separator (`;`, `&`, `|`, or newline),
- * strip surrounding quotes, and truncate. This is the ENTIRE "parsing" this
- * module does -- no flag tables, no per-command argument grammar. */
-const captureEntry = (text: string): string => {
-  const cut = text.split(/[;&|\n]/)[0];
-  let entry = stripQuotes(cut.trim());
-  if (entry.length > MAX_ENTRY_CHARS) entry = `${entry.slice(0, MAX_ENTRY_CHARS)}…`;
-  return entry;
+/** Single-pass quote-aware scan: returns the index of every UNQUOTED
+ * shell separator (`;`, `&`, `|`, newline). Quote state tracks ' and "
+ * plus backslash escapes; separators inside quotes are not boundaries.
+ * Deliberately stops there -- $( ) and backticks are not handled, keeping
+ * this a 20-line tokenizer rather than a shell parser. */
+const unquotedSeparators = (cmd: string): number[] => {
+  const seps: number[] = [];
+  let quote: string | null = null;
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (quote) {
+      // Backslash escapes inside "..." only; inside '...' it is literal.
+      if (c === "\\" && quote === '"') i++;
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === "\\") i++; // `it\'s` is not an opening quote
+    else if (c === "'" || c === '"') quote = c;
+    else if (c === ";" || c === "&" || c === "|" || c === "\n") seps.push(i);
+  }
+  return seps;
 };
 
-/** Find every top-level invocation of `name` in `cmd`: at the start of the
- * string, or immediately after a real shell separator (`;`, `&`, `|`, or a
- * newline). Requires whitespace (or end of string) right after `name` so
- * `ssh-keygen`/`docker-compose` don't match `ssh`/`docker`. Does NOT treat
- * quote characters as a boundary -- quoted prose (`echo "docker restart is
- * flaky"`) would otherwise misread as a real invocation. */
+/** Cut `text` at the next UNQUOTED separator. Quotes are kept as written:
+ * the cut never lands inside a quote, so they stay balanced. No truncation
+ * here -- dedup must see the full string (two distinct invocations sharing
+ * an 80-char prefix must not collapse); render-time truncation lives in
+ * formatTrackedCommands. */
+const captureEntry = (text: string): string => {
+  const seps = unquotedSeparators(text);
+  const cut = seps.length ? text.slice(0, seps[0]) : text;
+  return cut.trim();
+};
+
+/** Prefixes that hide the real command name: `VAR=val` assignments and a
+ * tiny, decades-stable wrapper list (sudo/env/nohup/time/command) — NOT a
+ * growing per-CLI taxonomy. They are skipped only to find the name; the
+ * entry keeps them (see findTopLevelInvocations). */
+const WRAPPERS = new Set(["sudo", "env", "nohup", "time", "command"]);
+const WRAPPER_VALUE_FLAGS: Record<string, RegExp> = {
+  sudo: /^-[ugpCDRT]$/, // -u user -g group -p prompt -C fd -D dir -R? -T
+  env: /^-[uS]$/,       // -u name, -S split-string
+};
+
+/** Next token from pos on the same line: a newline is a separator, so a
+ * lone `VAR=x` line must not borrow the command on the next one. */
+const tokenAt = (cmd: string, pos: number): [string, number] => {
+  while (pos < cmd.length && (cmd[pos] === " " || cmd[pos] === "\t")) pos++;
+  const t = cmd.slice(pos).match(/^\S+/)?.[0] ?? "";
+  return [t, pos];
+};
+
+/** Skip VAR=val prefixes and wrapper-command invocations starting at pos;
+ * returns the position where the real command begins. */
+const skipToCommand = (cmd: string, pos: number): number => {
+  for (;;) {
+    const [tok, at] = tokenAt(cmd, pos);
+    if (!tok) return at;
+    if (/^[A-Za-z_]\w*=/.test(tok)) { pos = at + tok.length; continue; }
+    if (!WRAPPERS.has(tok)) return at;
+    pos = at + tok.length;
+    for (;;) {
+      const [flag, fat] = tokenAt(cmd, pos);
+      if (!flag.startsWith("-")) break;
+      pos = fat + flag.length;
+      if (WRAPPER_VALUE_FLAGS[tok]?.test(flag)) {
+        const [value, vat] = tokenAt(cmd, pos); // consume the flag's value
+        pos = vat + value.length;
+      }
+    }
+  }
+};
+
+/** Positions where an invocation of `name` begins: position 0 or right
+ * after an UNQUOTED separator, so `echo "a; docker restart"` is not an
+ * invocation. Requires whitespace (or end of string) right after `name`, so
+ * `ssh-keygen`/`docker-compose` don't match `ssh`/`docker`. Returns the
+ * START of the segment (before any VAR=/wrapper prefixes), not the name
+ * itself, so the recorded entry stays faithful to what actually ran
+ * (`sudo -u root kubectl get pods` is recorded whole). */
 const findTopLevelInvocations = (cmd: string, name: string): number[] => {
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(`(?:^|[;&|\\n]\\s*)${escaped}(?=\\s|$)`, "g");
+  const bounds = [0, ...unquotedSeparators(cmd).map((i) => i + 1)];
   const starts: number[] = [];
-  for (const m of cmd.matchAll(re)) {
-    if (m.index !== undefined) starts.push(m.index + m[0].length);
+  for (const bound of bounds) {
+    const pos = skipToCommand(cmd, bound);
+    if (!cmd.startsWith(name, pos)) continue;
+    const after = cmd[pos + name.length];
+    if (after === undefined || /\s/.test(after)) starts.push(bound);
   }
   return starts;
 };
 
-/**
- * Locate the SSH target by TOKEN POSITION (via matchAll's own `.index`,
+/** ssh flags that take NO argument; every other leading `-flag` consumes
+ * the next token. Without this, `ssh -T host 'cmd'` misreads `host` as
+ * -T's value and the remote command is never found. Clusters (`-tt`, `-NT`)
+ * count as boolean when every letter is one. */
+const SSH_BOOL_FLAG = /^-[46ACfGgKkMNTtVvXxYyna]+$/;
+
+/** Locate the SSH target by TOKEN POSITION (via matchAll's own `.index`,
  * never a substring re-search, which would misfire on e.g.
  * `ssh -i key-prod prod ...` finding "prod" inside "key-prod") and return
- * everything genuinely after it, trimmed. Flag-skipping is deliberately
- * approximate: a `-flag` token is boolean if the next token is also a flag
- * (or there is no next token), otherwise it's assumed to consume a value --
- * good enough to skip past `-i key -p 2222` to the real host without a
- * per-flag value table.
- */
+ * everything after it, trimmed. */
 const sshRemoteCommand = (afterSsh: string): string | undefined => {
   const tokens = [...afterSsh.matchAll(/\S+/g)];
   let i = 0;
   while (i < tokens.length && tokens[i][0].startsWith("-")) {
-    const next = tokens[i + 1];
-    i += next && !next[0].startsWith("-") ? 2 : 1;
+    i += SSH_BOOL_FLAG.test(tokens[i][0]) ? 1 : 2;
   }
   const target = tokens[i];
   if (!target) return undefined;
@@ -62,7 +125,7 @@ export interface TrackedCommandActivity {
 
 /**
  * Scans bash tool-call commands for invocations of any command name in
- * `trackCommands`, capturing a truncated one-line snapshot per match --
+ * `trackCommands`, capturing a one-line snapshot per match --
  * deliberately shallow (no per-command argument parsing) so this never
  * needs updating as any given CLI's flags evolve, unlike a design that
  * tries to extract structured fields (e.g. "the kubectl namespace" or "the
@@ -70,8 +133,8 @@ export interface TrackedCommandActivity {
  *
  * When "ssh" is one of the tracked names, also scans inside its own
  * remote-command argument (quoted or not) for other tracked names --
- * running an infra command over SSH is at least as common as running one
- * locally, and a top-level-only scan would otherwise miss it.
+ * running a command over SSH is as common as running it locally, and a
+ * top-level-only scan would otherwise miss it.
  *
  * Only matches literal command text, never tool_result output.
  */
@@ -92,21 +155,36 @@ export const extractTrackedCommands = (
 
     for (const name of trackCommands) {
       for (const startAt of findTopLevelInvocations(cmd, name)) {
-        const entry = captureEntry(cmd.slice(startAt).trim());
-        if (entry) byCommand.get(name)!.add(`${name} ${entry}`.trim());
+        const item = captureEntry(cmd.slice(startAt).trim());
+        if (!item) continue;
+        const set = byCommand.get(name)!;
+        // re-running the same command refreshes it to the tail — the cap
+        // then keeps the N most-recently-USED, not first-seen.
+        if (set.has(item)) set.delete(item);
+        set.add(item);
       }
     }
 
     if (trackSsh) {
-      for (const startAt of findTopLevelInvocations(cmd, "ssh")) {
-        const remote = sshRemoteCommand(cmd.slice(startAt));
+      for (const bound of findTopLevelInvocations(cmd, "ssh")) {
+        // bounds are segment starts (incl. wrappers); the ssh token itself
+        // sits at skipToCommand — slice past it for the remote parser.
+        const seg = cmd.slice(bound);
+        const remote = sshRemoteCommand(seg.slice(skipToCommand(seg, 0) + 3));
         if (!remote) continue;
-        const unquoted = stripQuotes(remote);
+        // The remote string's quotes were the LOCAL shell's syntax, not
+        // the remote command's — a leftover stray ' would open a phantom
+        // quote in the rescanner and swallow the rest of the line. Strip
+        // them all; boundary detection stays shallow regardless.
+        const unquoted = remote.replace(/['"]/g, "");
         for (const name of trackCommands) {
           if (name === "ssh") continue;
           for (const startAt2 of findTopLevelInvocations(unquoted, name)) {
-            const entry = captureEntry(unquoted.slice(startAt2).trim());
-            if (entry) byCommand.get(name)!.add(`${name} ${entry}`.trim());
+            const item = captureEntry(unquoted.slice(startAt2).trim());
+            if (!item) continue;
+            const set = byCommand.get(name)!;
+            if (set.has(item)) set.delete(item);
+            set.add(item);
           }
         }
       }
@@ -116,10 +194,21 @@ export const extractTrackedCommands = (
   return { byCommand };
 };
 
-const cap = (set: Set<string>, limit: number, joinWith: string): string => {
-  const arr = [...set];
+/** Render form: one line (a quoted multi-line argument such as
+ * `python3 -c '...'` would otherwise break the section's line format),
+ * truncated. */
+const truncate = (entry: string): string => {
+  const line = entry.replace(/\s+/g, " ");
+  return line.length > MAX_ENTRY_CHARS ? `${line.slice(0, MAX_ENTRY_CHARS)}…` : line;
+};
+
+/** Keep the NEWEST `limit` entries, not the oldest — a ledger whose
+ * value is "what did we touch recently" must not freeze at its first 10
+ * entries while everything later drowns in a permanent "(+N more)". */
+const capTail = (set: Set<string>, limit: number, joinWith: string): string => {
+  const arr = [...set].map(truncate);
   if (arr.length <= limit) return arr.join(joinWith);
-  return arr.slice(0, limit).join(joinWith) + ` (+${arr.length - limit} more)`;
+  return `(+${arr.length - limit} earlier) ` + arr.slice(-limit).join(joinWith);
 };
 
 /** Formats TrackedCommandActivity into `[Commands Run]` body lines, one per
@@ -129,7 +218,7 @@ const cap = (set: Set<string>, limit: number, joinWith: string): string => {
 export const formatTrackedCommands = (act: TrackedCommandActivity): string[] => {
   const lines: string[] = [];
   for (const [name, entries] of act.byCommand) {
-    if (entries.size > 0) lines.push(`${name}: ${cap(entries, 10, " | ")}`);
+    if (entries.size > 0) lines.push(`${name}: ${capTail(entries, 10, " | ")}`);
   }
   return lines;
 };

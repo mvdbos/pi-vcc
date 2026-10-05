@@ -167,6 +167,21 @@ describe("compile with trackCommands", () => {
     expect(r).toContain("kubectl get pods,svc -n production");
   });
 
+  it("merge round-trip: a prev '(+N earlier)' marker never becomes a fake entry", () => {
+    const previousSummary = [
+      "[Commands Run]\n- ssh: (+10 earlier) ssh host9 | ssh host10",
+      "---",
+      "[user]\nfirst task",
+    ].join("\n\n");
+    const r = compile({
+      previousSummary,
+      messages: [userMsg("next"), assistantWithToolCall("bash", { command: "ssh newhost" })],
+      trackCommands: ["ssh"],
+    });
+    expect(r).toContain("ssh newhost");
+    expect(r).not.toMatch(/earlier\) ssh/); // marker must not merge in as an entry
+  });
+
   it("multiline bash blocks are captured through the full compile pipeline, not just the first line", () => {
     const r = compile({
       messages: [

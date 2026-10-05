@@ -99,6 +99,7 @@ const mergeCategorizedLines = (
   prev: string,
   fresh: string,
   splitOn: string,
+  touchOnDup = false,
 ): Record<string, Set<string>> => {
   const merged: Record<string, Set<string>> = {};
   for (const cat of categories) merged[cat] = new Set();
@@ -109,10 +110,21 @@ const mergeCategorizedLines = (
         const prefix = `- ${cat}: `;
         if (!line.startsWith(prefix)) continue;
         let rest = line.slice(prefix.length);
-        rest = rest.replace(/\s*\(\+\d+ more\)\s*$/, "");
+        // Overflow marker sits at the END for head-capped sections
+        // ("(+N more)") but at the START for tail-capped ones
+        // ("(+N earlier)") — strip both so the marker never merges back
+        // in as a fake entry.
+        rest = rest
+          .replace(/^\s*\(\+\d+ earlier\)\s*/, "")
+          .replace(/\s*\(\+\d+ (?:more|earlier)\)\s*$/, "");
         for (const p of rest.split(splitOn)) {
           const trimmed = p.trim();
-          if (trimmed) merged[cat].add(trimmed);
+          if (!trimmed) continue;
+          // touchOnDup: re-inserting an existing entry moves it to the
+          // tail — with tail-capping this makes the section "N most-
+          // recently-USED" rather than "N most-recently-first-seen".
+          if (touchOnDup && merged[cat].has(trimmed)) merged[cat].delete(trimmed);
+          merged[cat].add(trimmed);
         }
       }
     }
@@ -126,10 +138,15 @@ const formatCategorizedLines = (
   categories: readonly string[],
   joinWith: string,
   itemLimit = 10,
+  keepTail = false,
 ): string => {
   const cap = (set: Set<string>) => {
     const arr = [...set];
     if (arr.length <= itemLimit) return arr.join(joinWith);
+    // head: oldest kept, newest overflow "(+N more)" — right for a stable
+    // set like files. tail: newest kept, oldest overflow "(+N earlier)" —
+    // right for a recency ledger like Commands Run.
+    if (keepTail) return `(+${arr.length - itemLimit} earlier) ` + arr.slice(-itemLimit).join(joinWith);
     return arr.slice(0, itemLimit).join(joinWith) + ` (+${arr.length - itemLimit} more)`;
   };
 
@@ -169,8 +186,8 @@ const discoverCategoryNames = (text: string): string[] => {
  */
 const mergeTrackedCommandLines = (prev: string, fresh: string): string => {
   const categories = [...new Set([...discoverCategoryNames(prev), ...discoverCategoryNames(fresh)])];
-  const merged = mergeCategorizedLines(categories, prev, fresh, " | ");
-  return formatCategorizedLines("Commands Run", merged, categories, " | ");
+  const merged = mergeCategorizedLines(categories, prev, fresh, " | ", true);
+  return formatCategorizedLines("Commands Run", merged, categories, " | ", 10, true);
 };
 
 const mergeBriefTranscript = (prev: string, fresh: string): string => {

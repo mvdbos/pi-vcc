@@ -71,12 +71,14 @@ describe("extractTrackedCommands", () => {
     expect(act.byCommand.get("docker")!.size).toBe(0);
   });
 
-  it("truncates very long entries", () => {
+  it("keeps full strings in the ledger (dedup sees untruncated), truncates only at render", () => {
     const longArgs = "x".repeat(200);
     const act = extractTrackedCommands([bash(`aws ec2 ${longArgs}`)], TRACK);
-    const entry = [...act.byCommand.get("aws")!][0];
-    expect(entry.length).toBeLessThanOrEqual(85);
-    expect(entry.endsWith("…")).toBe(true);
+    const stored = [...act.byCommand.get("aws")!][0];
+    expect(stored.length).toBeGreaterThan(200); // full fidelity for dedup
+    const rendered = formatTrackedCommands(act)[0];
+    expect(rendered).toContain("…");
+    expect(rendered.length).toBeLessThanOrEqual(5 + 80 + 1); // "aws: " + entry + "…"
   });
 
   it("scans inside a QUOTED ssh remote-command string for other tracked names", () => {
@@ -89,9 +91,42 @@ describe("extractTrackedCommands", () => {
     expect([...act.byCommand.get("docker")!]).toContain("docker restart web");
   });
 
+  it("boolean ssh flags (-T, -v, -N, -f) consume no value — host and remote command still found", () => {
+    for (const flag of ["-T", "-v", "-N", "-f", "-tt", "-vv", "-NT"]) {
+      const act = extractTrackedCommands([bash(`ssh ${flag} prod-server docker restart web`)], TRACK);
+      expect([...act.byCommand.get("docker")!]).toContain("docker restart web");
+    }
+  });
+
   it("locates the ssh target by token position, not substring match (key-prod must not be mistaken for prod)", () => {
     const act = extractTrackedCommands([bash("ssh -i key-prod prod docker restart web")], TRACK);
     expect([...act.byCommand.get("docker")!]).toContain("docker restart web");
+  });
+
+  it("wrapper prefixes (sudo/env/nohup/time/command) don't hide the real command", () => {
+    const act = extractTrackedCommands(
+      [bash("sudo docker restart web"), bash("nohup kubectl apply -f x.yaml &"), bash("env -i docker ps"), bash("sudo -u root kubectl get pods")],
+      TRACK,
+    );
+    // entries keep their prefixes — the ledger records what actually ran
+    expect([...act.byCommand.get("docker")!]).toContain("sudo docker restart web");
+    expect([...act.byCommand.get("docker")!]).toContain("env -i docker ps");
+    expect([...act.byCommand.get("kubectl")!]).toContain("nohup kubectl apply -f x.yaml");
+    expect([...act.byCommand.get("kubectl")!]).toContain("sudo -u root kubectl get pods");
+  });
+
+  it("VAR=val prefixes don't hide the command and stay in the entry (fidelity)", () => {
+    const act = extractTrackedCommands([bash("KUBECONFIG=/tmp/k kubectl get pods")], TRACK);
+    const entries = [...act.byCommand.get("kubectl")!];
+    expect(entries).toEqual(["KUBECONFIG=/tmp/k kubectl get pods"]);
+  });
+
+  it("re-running a command moves it to the tail (most-recently-used)", () => {
+    const cmds = [...Array.from({ length: 11 }, (_, i) => bash(`ssh host${i}`)), bash("ssh host0")];
+    const act = extractTrackedCommands(cmds, ["ssh"]);
+    const [line] = formatTrackedCommands(act);
+    expect(line).toContain("ssh host0"); // refreshed — survives the tail cap
+    expect(line).not.toContain("ssh host1 |"); // oldest dropped instead
   });
 
   it("ignores non-bash tool calls entirely", () => {
@@ -111,10 +146,43 @@ describe("formatTrackedCommands", () => {
     expect(formatTrackedCommands(act)).toEqual(["ssh: ssh prod-server"]);
   });
 
-  it("caps entries per command at 10 with an overflow marker", () => {
+  it("caps entries per command at 10 keeping the NEWEST (recency ledger)", () => {
     const cmds = Array.from({ length: 12 }, (_, i) => bash(`ssh host${i}`));
     const act = extractTrackedCommands(cmds, ["ssh"]);
     const [line] = formatTrackedCommands(act);
-    expect(line).toContain("(+2 more)");
+    expect(line).toContain("(+2 earlier)");
+    expect(line).toContain("ssh host11"); // newest kept
+    expect(line).not.toContain("ssh host0 "); // oldest overflowed
+  });
+
+  it("a quoted multi-line argument renders on one line", () => {
+    const act = extractTrackedCommands([bash("python3 -c 'import os\nprint(1)'")], ["python3"]);
+    expect(formatTrackedCommands(act)).toEqual(["python3: python3 -c 'import os print(1)'"]);
+  });
+
+  it("separators inside quotes are not boundaries — either direction", () => {
+    // quoted prose must not false-positive…
+    const prose = extractTrackedCommands([bash('echo "a; docker restart"')], TRACK);
+    expect(prose.byCommand.get("docker")!.size).toBe(0);
+    // …and a real command's entry must not split mid-quote
+    const piped = extractTrackedCommands([bash(`ssh dulov 'echo "hunter2" | sudo -S apt update'`)], TRACK);
+    const entries = [...piped.byCommand.get("ssh")!];
+    expect(entries.some((e) => e.includes("hunter2") && e.includes("sudo -S apt update"))).toBe(true);
+  });
+
+  it("a lone VAR=x line is not an invocation of the command on the next line", () => {
+    const act = extractTrackedCommands([bash("COOKIE=/tmp/c\ncurl -s https://x")], ["curl"]);
+    expect([...act.byCommand.get("curl")!]).toEqual(["curl -s https://x"]);
+  });
+
+  it("an escaped quote outside quotes does not open a quote", () => {
+    const act = extractTrackedCommands([bash("echo it\\'s; docker ps; echo done")], TRACK);
+    expect([...act.byCommand.get("docker")!]).toEqual(["docker ps"]);
+  });
+
+  it("keeps quotes as written (no stray quote stripped off the end)", () => {
+    const act = extractTrackedCommands([bash("cd db && psql -c 'select 1'"), bash(`ssh prod "docker ps"`)], ["psql", "ssh"]);
+    expect([...act.byCommand.get("psql")!]).toEqual(["psql -c 'select 1'"]);
+    expect([...act.byCommand.get("ssh")!]).toEqual(['ssh prod "docker ps"']);
   });
 });
