@@ -15,6 +15,8 @@ export type RecallAction =
 export interface RecallRequest {
   scope: RecallScope;
   action: RecallAction;
+  /** Params the caller set that this action does not use. Defaults (page:1, expand:[]) are not listed. */
+  ignored?: string[];
 }
 
 export interface RecallToolParams {
@@ -34,16 +36,29 @@ export interface RecallToolParams {
 export const parseToolRequest = (params: RecallToolParams): RecallRequest => {
   const scope = normalizeRecallScope(params.scope);
   const q = params.query?.trim();
-  const target = q ? parseDrillDown(q) : null;
-  if (target) return { scope, action: { kind: "drill", target } };
-  if (normalizeRecallMode(params.mode) === "touched") return { scope, action: { kind: "touched", page: params.page } };
   const indices = [...new Set(params.expand ?? [])];
-  if (indices.length > 0) return { scope, action: { kind: "expand", indices } };
-  if (Array.isArray(params.range) && params.range.length > 0) {
-    return { scope, action: { kind: "range", range: params.range, page: Math.max(1, params.page ?? 1) } };
-  }
-  if (q) return { scope, action: { kind: "search", query: params.query!, page: Math.max(1, params.page ?? 1) } };
-  return { scope, action: { kind: "recent", query: params.query } };
+  const hasRange = Array.isArray(params.range) && params.range.length > 0;
+  const set = {
+    query: Boolean(q),
+    expand: indices.length > 0,
+    range: hasRange,
+    page: (params.page ?? 1) > 1,
+    touched: normalizeRecallMode(params.mode) === "touched",
+  };
+  const req = (action: RecallAction, uses: (keyof typeof set)[]): RecallRequest => {
+    const ignored = (Object.keys(set) as (keyof typeof set)[])
+      .filter((k) => set[k] && !uses.includes(k))
+      .map((k) => (k === "touched" ? "mode" : k));
+    return ignored.length > 0 ? { scope, action, ignored } : { scope, action };
+  };
+
+  const target = q ? parseDrillDown(q) : null;
+  if (target) return req({ kind: "drill", target }, ["query"]);
+  if (set.touched) return req({ kind: "touched", page: params.page }, ["touched", "page"]);
+  if (set.expand) return req({ kind: "expand", indices }, ["expand"]);
+  if (hasRange) return req({ kind: "range", range: params.range!, page: Math.max(1, params.page ?? 1) }, ["range", "page"]);
+  if (q) return req({ kind: "search", query: params.query!, page: Math.max(1, params.page ?? 1) }, ["query", "page"]);
+  return req({ kind: "recent", query: params.query }, []);
 };
 
 /** /pi-vcc-recall args -> request. A person types a query, scope:all and page:N only. */

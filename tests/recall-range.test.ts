@@ -134,6 +134,7 @@ describe("vcc_recall range", () => {
     expect(expanded).toContain("#2 [user] entry 2 body");
     expect(expanded).not.toContain("Range");
     const ranged = await recall(file, { range: [0, 1], query: "entry" }, ids);
-    expect(ranged.startsWith("Range #0..#1")).toBe(true);
+    expect(ranged.startsWith("Ignored: query (range runs alone")).toBe(true);
+    expect(ranged).toContain("Range #0..#1 (2 messages):");
   });
 });

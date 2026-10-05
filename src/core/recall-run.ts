@@ -50,7 +50,25 @@ export interface RecallPagingHints {
   nextPage(query: string, scope: RecallScope, page: number): string;
 }
 
-export const runRecall = (request: RecallRequest, view: RecallView, hints: RecallPagingHints): string => {
+const IGNORED_REASON: Record<RecallRequest["action"]["kind"], string> = {
+  drill: "a #N:path query runs alone",
+  touched: "mode:'touched' runs alone",
+  expand: "expand runs alone; send the rest in a separate call",
+  range: "range runs alone; send the rest in a separate call",
+  search: "",
+  recent: "page applies to query or range results",
+};
+
+/** One line naming params the action did not use, so nothing is dropped silently. */
+export const ignoredNote = (request: RecallRequest): string =>
+  request.ignored?.length
+    ? `Ignored: ${request.ignored.join(", ")} (${IGNORED_REASON[request.action.kind]}).\n\n`
+    : "";
+
+export const runRecall = (request: RecallRequest, view: RecallView, hints: RecallPagingHints): string =>
+  ignoredNote(request) + runAction(request, view, hints);
+
+const runAction = (request: RecallRequest, view: RecallView, hints: RecallPagingHints): string => {
   const { action } = request;
   const scopeAll = view.scope === "all";
 
