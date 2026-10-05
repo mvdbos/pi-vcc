@@ -2,16 +2,22 @@ import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
 import { loadAllMessages } from "../core/load-messages";
-import { searchEntriesDetailed, getTouchedFiles } from "../core/search-entries";
-import { formatRecallOutput, formatTouchedOutput } from "../core/format-recall";
+import { formatRecallOutput } from "../core/format-recall";
 import { renderMessage } from "../core/render-entries";
 import type { RenderedEntry } from "../core/render-entries";
 import { getActiveLineageEntryIds } from "../core/lineage";
-import { normalizeRecallScope, normalizeRecallMode } from "../core/recall-scope";
-import { parseDrillDown, expandEntryFile } from "../core/drill-down";
+import { normalizeRecallScope } from "../core/recall-scope";
+import { parseToolRequest } from "../core/recall-request";
+import { invalidExpandIndices, openRecallView, runRecall, type RecallPagingHints } from "../core/recall-run";
 
-const DEFAULT_RECENT = 25;
-const PAGE_SIZE = 5;
+export { invalidExpandIndices };
+
+const TOOL_PAGING_HINTS: RecallPagingHints = {
+  outOfRange: (_query, _scope, totalPages, truncated) => truncated
+    ? `Use a page between 1 and ${totalPages}.`
+    : `Use a page between 1 and ${totalPages}, or refine your query.`,
+  nextPage: (_query, scope, page) => `\n--- Use page:${page}${scope === "all" ? " with scope:'all'" : ""} for more results ---`,
+};
 
 /** Default total character budget for a pinned-range digest (~1.5k tokens). */
 export const RANGE_BUDGET_CHARS = 6000;
@@ -46,9 +52,6 @@ export const rangeCap = (
   const raw = (budget / (position + 1)) / hSum;
   return Math.max(minChars, Math.min(300, Math.floor(raw)));
 };
-
-export const invalidExpandIndices = (requested: number[], available: Set<number>): number[] =>
-  requested.filter((i) => !Number.isInteger(i) || !available.has(i));
 
 /**
  * Validate the pinned-range form (from/to/limit). Returns an error string, or
@@ -267,133 +270,10 @@ export const registerRecallTool = (pi: ExtensionAPI) => {
         return { content: [{ type: "text", text: output }], details: undefined };
       }
 
-      // Drill-down: #N:path resolves to file-scoped tool content. Anchored so
-      // inline mentions like "see #42:auth.ts" are never treated as drill-down.
-      // Honors scope like every other recall path: the target entry must be on
-      // the active lineage unless scope:'all'. Membership is checked against
-      // global indices; expandEntryFile keeps loading unfiltered so #N stays
-      // aligned with the global message index.
-      const q = params.query?.trim();
-      if (q && parseDrillDown(q)) {
-        const parsed = parseDrillDown(q)!;
-        if (lineageEntryIds) {
-          const { rendered } = loadAllMessages(sessionFile, false, lineageEntryIds);
-          if (!rendered.some((m) => m.index === parsed.index)) {
-            return {
-              content: [{ type: "text", text: `Cannot expand indices outside active lineage: ${parsed.index}. Use scope:'all' to reach other branches.` }],
-              details: undefined,
-            };
-          }
-        }
-        const text = expandEntryFile(
-          sessionFile,
-          parsed.index,
-          parsed.pathPattern,
-          parsed.full,
-          parsed.offset,
-          parsed.limit,
-        );
-        return {
-          content: [{ type: "text", text }],
-          details: undefined,
-        };
-      }
-
-      // touched mode: aggregate file operations across the live window.
-      if (normalizeRecallMode(params.mode) === "touched") {
-        const { rendered, rawMessages } = loadAllMessages(sessionFile, false, lineageEntryIds);
-        const touched = getTouchedFiles(rawMessages, rendered);
-        const text = formatTouchedOutput(touched, params.page);
-        return {
-          content: [{ type: "text", text }],
-          details: undefined,
-        };
-      }
-
-      const expandSet = new Set(params.expand ?? []);
-      const hasExpand = expandSet.size > 0;
-
-      if (hasExpand) {
-        const { rendered: fullMsgs } = loadAllMessages(sessionFile, true, lineageEntryIds);
-        const requested = [...expandSet];
-        const byIndex = new Map(fullMsgs.map((m) => [m.index, m]));
-        const invalid = invalidExpandIndices(requested, new Set(byIndex.keys()));
-        if (invalid.length > 0) {
-          return {
-            content: [{ type: "text", text: `Cannot expand indices outside ${scope === "all" ? "session history" : "active lineage"}: ${invalid.join(", ")}` }],
-            details: undefined,
-          };
-        }
-
-        const expanded = requested.map((i) => byIndex.get(i)).filter((m): m is NonNullable<typeof m> => Boolean(m));
-        const output = (scope === "all" ? "Scope: all\n\n" : "") + formatRecallOutput(expanded);
-        return {
-          content: [{ type: "text", text: output }],
-          details: undefined,
-        };
-      }
-
-      const { rendered: msgs, rawMessages } = loadAllMessages(sessionFile, false, lineageEntryIds);
-
-      if (params.query?.trim()) {
-        const { hits, totalBeforeCap, truncated } = searchEntriesDetailed(msgs, rawMessages, params.query);
-        const page = Math.max(1, params.page ?? 1);
-        // Single source of truth for page count: hits.length, the same array
-        // that's actually paginated below (already floor-filtered and capped).
-        const totalPages = Math.ceil(hits.length / PAGE_SIZE);
-        const scopeSuffix = scope === "all" ? " (scope: all)" : "";
-        // The hard cap can discard genuine matches; hits.length alone would
-        // then understate the real total. Say so explicitly instead of
-        // reporting the capped count as if it were everything. Neutral
-        // wording ("showing", not "showing top"): regex-path hits are
-        // boolean/chronological matches with no relevance score, so "top"
-        // would falsely imply a ranking that only the BM25 path has.
-        const truncationNote = truncated
-          ? ` — showing ${hits.length} of ${totalBeforeCap} matches, refine your query for more precise results`
-          : "";
-
-        // The hard cap creates a fixed reachable page range (1..totalPages).
-        // A page beyond it isn't "no matches" — matches exist, the page just
-        // isn't reachable. Say so explicitly instead of falling through to
-        // formatRecallOutput's zero-hit message, which would be false here.
-        if (hits.length > 0 && page > totalPages) {
-          // truncationNote already ends in "...refine your query" when the
-          // hard cap kicked in — don't repeat that suggestion here, just say
-          // which pages exist. Only add "or refine your query" when there's
-          // no truncation note to have said it already.
-          const guidance = truncated
-            ? `Use a page between 1 and ${totalPages}.`
-            : `Use a page between 1 and ${totalPages}, or refine your query.`;
-          const text =
-            `Page ${page} is outside the available range 1-${totalPages} ` +
-            `(${hits.length} matches${scopeSuffix}${truncationNote}). ${guidance}`;
-          return {
-            content: [{ type: "text", text }],
-            details: undefined,
-          };
-        }
-
-        const start = (page - 1) * PAGE_SIZE;
-        const pageResults = hits.slice(start, start + PAGE_SIZE);
-        const header = totalPages > 1
-          ? `Page ${page}/${totalPages} (${hits.length} total matches${scopeSuffix}${truncationNote})`
-          : `${hits.length} matches${scopeSuffix}${truncationNote}`;
-        const footer = page < totalPages
-          ? `\n--- Use page:${page + 1}${scope === "all" ? " with scope:'all'" : ""} for more results ---`
-          : "";
-        const output = formatRecallOutput(pageResults, params.query, header) + footer;
-        return {
-          content: [{ type: "text", text: output }],
-          details: undefined,
-        };
-      }
-
-      const output = (scope === "all" ? "Scope: all\n\n" : "") + formatRecallOutput(msgs.slice(-DEFAULT_RECENT), params.query);
-      return {
-        content: [{ type: "text", text: output }],
-        details: undefined,
-      };
+      const request = parseToolRequest(params);
+      const view = openRecallView(sessionFile, request.scope, ctx.sessionManager);
+      const text = runRecall(request, view, TOOL_PAGING_HINTS);
+      return { content: [{ type: "text", text }], details: undefined };
     },
   });
 };
-
