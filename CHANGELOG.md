@@ -2,6 +2,13 @@
 
 All notable changes to `@sting8k/pi-vcc` are documented in this file.
 
+## [Unreleased]
+
+### Fixes
+
+- **The recall note no longer stacks up** — since 0.3.14 the closing "Use `vcc_recall` …" note was wrapped across two lines, so the next compaction did not recognise it, kept it inside the transcript and added another: one more note per compaction (a third of the summaries in the maintainer's own sessions carried 2 to 4). Every copy is now removed before merging, which also cleans summaries written by older versions, and the freed lines go back to the transcript.
+- **`/pi-vcc` on a short session explains itself** — Pi refuses to compact while the whole session fits in the recent part it always keeps (`compaction.keepRecentTokens`), before any extension runs. pi-vcc now says that, as a warning, instead of "Compaction failed: Nothing to compact (session too small)".
+
 ## [0.9.0]
 
 ### Features

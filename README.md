@@ -25,7 +25,7 @@ Inspired by [VCC](https://github.com/lllyasviel/VCC) (View-oriented Conversation
 
 Size and latency measured over 1,884 real sessions (summary chars vs the summarized conversation). How much of a session's facts survive is measured in [`benchmarks/README.md`](./benchmarks/README.md).
 
-pi-vcc also takes over `/compact` and automatic compactions, falls back to its own cut when Pi has nothing to summarize, and adds `/pi-vcc` for compacting on demand.
+pi-vcc also takes over `/compact` and automatic compactions, makes its own cut when Pi's cut leaves nothing to summarize, and adds `/pi-vcc` for compacting on demand.
 
 ## Install
 
@@ -53,6 +53,8 @@ pi-vcc runs automatically when your context window fills up, or on demand:
 - `/pi-vcc keep:N [prompt]` keeps the last `N` user turns (`keep:0` compacts everything) and sends the optional prompt to the agent afterwards.
 
 With the default `keep:1`, a small tail is grown automatically (see `smartKeepTail`). To leave `/compact` and automatic compactions to Pi core, set `overrideDefaultCompaction: false`.
+
+On a short session `/pi-vcc` can answer "Nothing to compact yet" whatever `keep:N` says: Pi stops before any extension runs while the whole session still fits in the recent part it always keeps (`compaction.keepRecentTokens` in Pi's settings).
 
 ### Compacted message structure
 

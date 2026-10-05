@@ -25,6 +25,14 @@ export const registerPiVccCommand = (pi: ExtensionAPI) => {
         onError: (err) => {
           if (err.message === "Compaction cancelled" || err.message === "Already compacted") {
             ctx.ui.notify("Nothing to compact", "warning");
+          } else if (err.message.startsWith("Nothing to compact")) {
+            // Pi throws this before any extension hook runs: everything still fits in
+            // the recent part it always keeps (compaction.keepRecentTokens).
+            ctx.ui.notify(
+              "Nothing to compact yet: the whole session still fits in the recent part Pi always keeps " +
+                "(compaction.keepRecentTokens in Pi settings). Try again once the session is longer.",
+              "warning",
+            );
           } else {
             ctx.ui.notify(`Compaction failed: ${err.message}`, "error");
           }
