@@ -2,11 +2,15 @@
 
 All notable changes to `@sting8k/pi-vcc` are documented in this file.
 
-## [Unreleased]
+## [0.9.0]
 
 ### Features
 
 - **`trackCommands` setting and `[Tracked Commands]` section** — list the commands you want remembered across compactions (e.g. `["ssh", "kubectl", "docker"]`, `["psql", "terraform"]`, or a prefix like `"gh pr"`) and the summary keeps their invocations from `bash` tool calls: the 10 most recently used per command, each as written up to the next unquoted shell separator. Sees through `sudo`/`env`/`VAR=` prefixes and into an `ssh host '<command>'` remote command. Fills the gap for sessions where the commands are the record, such as ops work that never edits a file or touches git. Off by default (`[]`), no change for existing configs.
+
+### Docs
+
+- **Shorter README** — repetition removed, the example summary now matches real output, and the size/latency figures were remeasured over 1,884 real sessions (97.6% median size reduction, 1 ms median compaction).
 
 ### Internal
 
