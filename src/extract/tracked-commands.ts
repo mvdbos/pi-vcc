@@ -201,7 +201,7 @@ export const extractTrackedCommands = (
   return { byCommand };
 };
 
-/** Line format of `[Commands Run]`, shared with the merge in
+/** Line format of `[Tracked Commands]`, shared with the merge in
  * core/summarize.ts: `- <name>: <entry> | <entry> ...`, newest
  * COMMANDS_PER_NAME kept. " | " rather than "," since an entry (e.g.
  * `kubectl get pods,svc`) can legitimately contain a comma. */
@@ -217,7 +217,7 @@ const renderEntry = (entry: string): string => {
   return line.length > MAX_ENTRY_CHARS ? `${line.slice(0, MAX_ENTRY_CHARS)}…` : line;
 };
 
-/** Formats TrackedCommandActivity into `[Commands Run]` body lines, one per
+/** Formats TrackedCommandActivity into `[Tracked Commands]` body lines, one per
  * tracked command name that had at least one match. Keeps the NEWEST
  * entries: a ledger of what was run recently must not freeze at its first
  * ten while everything later drowns in a permanent "(+N more)". */

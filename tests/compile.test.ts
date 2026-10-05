@@ -119,26 +119,26 @@ describe("compile merge of wrapped header sections", () => {
 });
 
 describe("compile with trackCommands", () => {
-  it("omits Commands Run by default even with real trackable commands", () => {
+  it("omits Tracked Commands by default even with real trackable commands", () => {
     const r = compile({
       messages: [userMsg("restart the backend"), assistantWithToolCall("bash", { command: "ssh prod-server 'docker restart web-frontend'" })],
     });
-    expect(r).not.toContain("[Commands Run]");
+    expect(r).not.toContain("[Tracked Commands]");
   });
 
-  it("includes Commands Run when explicitly enabled, including the nested ssh remote command", () => {
+  it("includes Tracked Commands when explicitly enabled, including the nested ssh remote command", () => {
     const r = compile({
       messages: [userMsg("restart the backend"), assistantWithToolCall("bash", { command: "ssh prod-server 'docker restart web-frontend'" })],
       trackCommands: ["ssh", "docker"],
     });
-    expect(r).toContain("[Commands Run]");
+    expect(r).toContain("[Tracked Commands]");
     expect(r).toContain("ssh: ssh prod-server");
     expect(r).toContain("docker: docker restart web-frontend");
   });
 
-  it("merges Commands Run across compactions, deduping by command name", () => {
+  it("merges Tracked Commands across compactions, deduping by command name", () => {
     const previousSummary = [
-      "[Commands Run]\n- ssh: ssh prod-server | ssh staging-server",
+      "[Tracked Commands]\n- ssh: ssh prod-server | ssh staging-server",
       "---",
       "[user]\nfirst task",
     ].join("\n\n");
@@ -147,7 +147,7 @@ describe("compile with trackCommands", () => {
       messages: [userMsg("now check another host"), assistantWithToolCall("bash", { command: "ssh build-mac 'uptime'" })],
       trackCommands: ["ssh"],
     });
-    expect(r).toContain("[Commands Run]");
+    expect(r).toContain("[Tracked Commands]");
     expect(r).toContain("ssh prod-server");
     expect(r).toContain("ssh staging-server");
     expect(r).toContain("ssh build-mac");
@@ -155,7 +155,7 @@ describe("compile with trackCommands", () => {
 
   it("does not corrupt an entry containing a literal pipe-adjacent comma across a merge round-trip", () => {
     const previousSummary = [
-      "[Commands Run]\n- kubectl: kubectl get pods,svc -n production",
+      "[Tracked Commands]\n- kubectl: kubectl get pods,svc -n production",
       "---",
       "[user]\nfirst task",
     ].join("\n\n");
@@ -169,7 +169,7 @@ describe("compile with trackCommands", () => {
 
   it("merge round-trip: a prev '(+N earlier)' marker never becomes a fake entry", () => {
     const previousSummary = [
-      "[Commands Run]\n- ssh: (+10 earlier) ssh host9 | ssh host10",
+      "[Tracked Commands]\n- ssh: (+10 earlier) ssh host9 | ssh host10",
       "---",
       "[user]\nfirst task",
     ].join("\n\n");
@@ -198,7 +198,7 @@ describe("compile with trackCommands", () => {
       trackCommands: ["docker"],
     });
     // Look in the section only: the brief transcript also lists the commands.
-    const section = (r.match(/\[Commands Run\]\n([\s\S]*?)(?=\n\n|$)/)?.[1] ?? "").replace(/\n[ \t]+/g, " ");
+    const section = (r.match(/\[Tracked Commands\]\n([\s\S]*?)(?=\n\n|$)/)?.[1] ?? "").replace(/\n[ \t]+/g, " ");
     for (const c of cmds) expect(section).toContain(c);
   });
 
@@ -213,7 +213,7 @@ describe("compile with trackCommands", () => {
       messages: [userMsg("next"), assistantWithToolCall("bash", { command: "ssh newhost uptime" })],
       trackCommands: ["ssh"],
     });
-    const section = (r.match(/\[Commands Run\]\n([\s\S]*?)(?=\n\n|$)/)?.[1] ?? "").replace(/\n[ \t]+/g, " ");
+    const section = (r.match(/\[Tracked Commands\]\n([\s\S]*?)(?=\n\n|$)/)?.[1] ?? "").replace(/\n[ \t]+/g, " ");
     expect(section).toContain("(+1 earlier)"); // 11 commands, not fragments
     for (let i = 1; i < 10; i++) expect(section).toContain(`ssh host${i} 'docker ps \\| head -1'`);
     expect(section).toContain("ssh newhost uptime");

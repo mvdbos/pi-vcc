@@ -61,7 +61,7 @@ export interface PiVccSettings {
    */
   skipCustomTypes: string[];
   /**
-   * Commands whose bash invocations are kept in a "[Commands Run]" section,
+   * Commands whose bash invocations are kept in a "[Tracked Commands]" section,
    * e.g. `["ssh", "kubectl"]`, `["psql"]`, or a prefix like `"gh pr"`. Each
    * entry is the command as written up to the next unquoted separator
    * (`;`/`&`/`|`/newline) -- no per-command argument parsing. Also scans an

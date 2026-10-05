@@ -13,7 +13,7 @@ export interface BuildSectionsInput {
   briefBlocks?: NormalizedBlock[];
   /** Hook-provided file activity; authoritative for files touched before this compaction. */
   fileOps?: FileOps;
-  /** Command names to record in a [Commands Run] section (see
+  /** Command names to record in a [Tracked Commands] section (see
    * PiVccSettings.trackCommands). Empty/omitted = section stays empty. */
   trackCommands?: readonly string[];
 }

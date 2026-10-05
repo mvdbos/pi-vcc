@@ -27,7 +27,7 @@ export interface RankedCompileInput extends CompileInput {
   ranking?: BriefRankingOptions;
 }
 
-const HEADER_NAMES = ["Session Goal", "Files And Changes", "Commits", "Commands Run", "Outstanding Context", "User Preferences"];
+const HEADER_NAMES = ["Session Goal", "Files And Changes", "Commits", "Tracked Commands", "Outstanding Context", "User Preferences"];
 
 const SEPARATOR = "\n\n---\n\n";
 
@@ -67,12 +67,12 @@ const mergeHeaderSection = (header: string, prev: string, fresh: string): string
     return mergeFileLines(prev, fresh);
   }
 
-  // Commands Run: same categorized-merge shape as Files And Changes, but
+  // Tracked Commands: same categorized-merge shape as Files And Changes, but
   // categories are whatever command names the user configured in
   // trackCommands -- discover them from the actual text rather than a
   // fixed list, so a config change between compactions doesn't orphan a
   // category that was already recorded.
-  if (header === "Commands Run") {
+  if (header === "Tracked Commands") {
     return mergeTrackedCommandLines(prev, fresh);
   }
 
@@ -164,14 +164,14 @@ const discoverCategoryNames = (text: string): string[] => {
 };
 
 /**
- * Merge Commands Run by whatever command names actually appear in prev/
+ * Merge Tracked Commands by whatever command names actually appear in prev/
  * fresh (not a fixed category list, since trackCommands is user-config).
  * Line format (separator, cap) is owned by extract/tracked-commands.ts.
  */
 const mergeTrackedCommandLines = (prev: string, fresh: string): string => {
   const categories = [...new Set([...discoverCategoryNames(prev), ...discoverCategoryNames(fresh)])];
   const merged = mergeCategorizedLines(categories, prev, fresh, COMMAND_SEPARATOR, true);
-  return formatCategorizedLines("Commands Run", merged, categories, COMMAND_SEPARATOR, COMMANDS_PER_NAME, "tail");
+  return formatCategorizedLines("Tracked Commands", merged, categories, COMMAND_SEPARATOR, COMMANDS_PER_NAME, "tail");
 };
 
 const mergeBriefTranscript = (prev: string, fresh: string): string => {

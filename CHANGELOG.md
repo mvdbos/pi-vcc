@@ -6,11 +6,11 @@ All notable changes to `@sting8k/pi-vcc` are documented in this file.
 
 ### Features
 
-- **`trackCommands` setting and `[Commands Run]` section** — list the commands you want remembered across compactions (e.g. `["ssh", "kubectl", "docker"]`, `["psql", "terraform"]`, or a prefix like `"gh pr"`) and the summary keeps their invocations from `bash` tool calls: the 10 most recently used per command, each as written up to the next unquoted shell separator. Sees through `sudo`/`env`/`VAR=` prefixes and into an `ssh host '<command>'` remote command. Fills the gap for sessions where the commands are the record, such as ops work that never edits a file or touches git. Off by default (`[]`), no change for existing configs.
+- **`trackCommands` setting and `[Tracked Commands]` section** — list the commands you want remembered across compactions (e.g. `["ssh", "kubectl", "docker"]`, `["psql", "terraform"]`, or a prefix like `"gh pr"`) and the summary keeps their invocations from `bash` tool calls: the 10 most recently used per command, each as written up to the next unquoted shell separator. Sees through `sudo`/`env`/`VAR=` prefixes and into an `ssh host '<command>'` remote command. Fills the gap for sessions where the commands are the record, such as ops work that never edits a file or touches git. Off by default (`[]`), no change for existing configs.
 
 ### Internal
 
-- Extracted `mergeFileLines`'s category-parse-merge-render logic into generic, reusable `mergeCategorizedLines`/`formatCategorizedLines` helpers (no behavior change to `[Files And Changes]`), now shared with `[Commands Run]`'s merge logic.
+- Extracted `mergeFileLines`'s category-parse-merge-render logic into generic, reusable `mergeCategorizedLines`/`formatCategorizedLines` helpers (no behavior change to `[Files And Changes]`), now shared with `[Tracked Commands]`'s merge logic.
 
 ## [0.8.3]
 

@@ -10,7 +10,7 @@ const section = (title: string, items: string[]): string => {
  * Join a categorized line's items, capped at `limit`. "head" keeps the
  * oldest and ends with "(+N more)" (right for a stable set like files);
  * "tail" keeps the newest and starts with "(+N earlier)" (right for a
- * recency ledger like Commands Run). stripCapMarker is its inverse, used
+ * recency ledger like Tracked Commands). stripCapMarker is its inverse, used
  * when a merge re-reads the line.
  */
 export const capItems = (
@@ -82,7 +82,7 @@ export const formatSummary = (data: SectionData, options: FormatSummaryOptions =
     section("Session Goal", data.sessionGoal),
     section("Files And Changes", data.filesAndChanges),
     section("Commits", data.commits),
-    section("Commands Run", data.trackedCommands),
+    section("Tracked Commands", data.trackedCommands),
     section("Outstanding Context", data.outstandingContext),
     section("User Preferences", data.userPreferences),
   ].filter(Boolean);
