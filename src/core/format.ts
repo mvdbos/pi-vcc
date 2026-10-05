@@ -6,6 +6,28 @@ const section = (title: string, items: string[]): string => {
   return `[${title}]\n${body}`;
 };
 
+/**
+ * Join a categorized line's items, capped at `limit`. "head" keeps the
+ * oldest and ends with "(+N more)" (right for a stable set like files);
+ * "tail" keeps the newest and starts with "(+N earlier)" (right for a
+ * recency ledger like Commands Run). stripCapMarker is its inverse, used
+ * when a merge re-reads the line.
+ */
+export const capItems = (
+  items: readonly string[],
+  limit: number,
+  joinWith: string,
+  keep: "head" | "tail" = "head",
+): string => {
+  if (items.length <= limit) return items.join(joinWith);
+  const over = items.length - limit;
+  if (keep === "tail") return `(+${over} earlier) ` + items.slice(-limit).join(joinWith);
+  return items.slice(0, limit).join(joinWith) + ` (+${over} more)`;
+};
+
+export const stripCapMarker = (text: string): string =>
+  text.replace(/^\s*\(\+\d+ earlier\)\s*/, "").replace(/\s*\(\+\d+ (?:more|earlier)\)\s*$/, "");
+
 export const BRIEF_MAX_LINES = 120;
 const TUI_SAFE_LINE_CHARS = 120;
 

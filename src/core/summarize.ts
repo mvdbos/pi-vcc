@@ -3,7 +3,8 @@ import type { FileOps } from "../types";
 import { normalize } from "./normalize";
 import { filterNoise } from "./filter-noise";
 import { buildSections } from "./build-sections";
-import { formatSummary, capBrief, BRIEF_MAX_LINES, RECALL_NOTE, wrapLongLines } from "./format";
+import { formatSummary, capBrief, capItems, stripCapMarker, BRIEF_MAX_LINES, RECALL_NOTE, wrapLongLines } from "./format";
+import { COMMAND_SEPARATOR, COMMANDS_PER_NAME } from "../extract/tracked-commands";
 import { selectRankedBriefBlocks, type BriefRankingOptions } from "./rank";
 
 export interface CompileInput {
@@ -109,14 +110,8 @@ const mergeCategorizedLines = (
       for (const cat of categories) {
         const prefix = `- ${cat}: `;
         if (!line.startsWith(prefix)) continue;
-        let rest = line.slice(prefix.length);
-        // Overflow marker sits at the END for head-capped sections
-        // ("(+N more)") but at the START for tail-capped ones
-        // ("(+N earlier)") — strip both so the marker never merges back
-        // in as a fake entry.
-        rest = rest
-          .replace(/^\s*\(\+\d+ earlier\)\s*/, "")
-          .replace(/\s*\(\+\d+ (?:more|earlier)\)\s*$/, "");
+        // Strip the overflow marker so it never merges back in as an entry.
+        const rest = stripCapMarker(line.slice(prefix.length));
         for (const p of rest.split(splitOn)) {
           const trimmed = p.trim();
           if (!trimmed) continue;
@@ -138,21 +133,11 @@ const formatCategorizedLines = (
   categories: readonly string[],
   joinWith: string,
   itemLimit = 10,
-  keepTail = false,
+  keep: "head" | "tail" = "head",
 ): string => {
-  const cap = (set: Set<string>) => {
-    const arr = [...set];
-    if (arr.length <= itemLimit) return arr.join(joinWith);
-    // head: oldest kept, newest overflow "(+N more)" — right for a stable
-    // set like files. tail: newest kept, oldest overflow "(+N earlier)" —
-    // right for a recency ledger like Commands Run.
-    if (keepTail) return `(+${arr.length - itemLimit} earlier) ` + arr.slice(-itemLimit).join(joinWith);
-    return arr.slice(0, itemLimit).join(joinWith) + ` (+${arr.length - itemLimit} more)`;
-  };
-
   const lines: string[] = [];
   for (const cat of categories) {
-    if (merged[cat].size > 0) lines.push(`- ${cat}: ${cap(merged[cat])}`);
+    if (merged[cat].size > 0) lines.push(`- ${cat}: ${capItems([...merged[cat]], itemLimit, joinWith, keep)}`);
   }
   if (lines.length === 0) return "";
   return `[${header}]\n${lines.join("\n")}`;
@@ -181,13 +166,12 @@ const discoverCategoryNames = (text: string): string[] => {
 /**
  * Merge Commands Run by whatever command names actually appear in prev/
  * fresh (not a fixed category list, since trackCommands is user-config).
- * Split/join on " | " rather than "," -- a captured one-liner entry (e.g.
- * `kubectl get pods,svc -n prod`) can legitimately contain a comma.
+ * Line format (separator, cap) is owned by extract/tracked-commands.ts.
  */
 const mergeTrackedCommandLines = (prev: string, fresh: string): string => {
   const categories = [...new Set([...discoverCategoryNames(prev), ...discoverCategoryNames(fresh)])];
-  const merged = mergeCategorizedLines(categories, prev, fresh, " | ", true);
-  return formatCategorizedLines("Commands Run", merged, categories, " | ", 10, true);
+  const merged = mergeCategorizedLines(categories, prev, fresh, COMMAND_SEPARATOR, true);
+  return formatCategorizedLines("Commands Run", merged, categories, COMMAND_SEPARATOR, COMMANDS_PER_NAME, "tail");
 };
 
 const mergeBriefTranscript = (prev: string, fresh: string): string => {

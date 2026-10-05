@@ -1,4 +1,5 @@
 import type { NormalizedBlock } from "../types";
+import { capItems } from "../core/format";
 
 /** Maximum characters kept per captured entry (a truncated one-liner, not a
  * parsed structure -- deliberately shallow, see module docstring below). */
@@ -200,32 +201,32 @@ export const extractTrackedCommands = (
   return { byCommand };
 };
 
+/** Line format of `[Commands Run]`, shared with the merge in
+ * core/summarize.ts: `- <name>: <entry> | <entry> ...`, newest
+ * COMMANDS_PER_NAME kept. " | " rather than "," since an entry (e.g.
+ * `kubectl get pods,svc`) can legitimately contain a comma. */
+export const COMMAND_SEPARATOR = " | ";
+export const COMMANDS_PER_NAME = 10;
+
 /** Render form: one line (a quoted multi-line argument such as
- * `python3 -c '...'` would otherwise break the section's line format),
- * with an inner ` | ` escaped as ` \| ` so the merge, which splits a
- * line's entries on ` | `, keeps the entry whole. Then truncated. */
-const truncate = (entry: string): string => {
-  const line = entry.replace(/\s+/g, " ").replaceAll(" | ", " \\| ");
+ * `python3 -c '...'` would otherwise break the line format), with an inner
+ * separator escaped as ` \| ` so the merge, which splits on
+ * COMMAND_SEPARATOR, keeps the entry whole. Then truncated. */
+const renderEntry = (entry: string): string => {
+  const line = entry.replace(/\s+/g, " ").replaceAll(COMMAND_SEPARATOR, " \\| ");
   return line.length > MAX_ENTRY_CHARS ? `${line.slice(0, MAX_ENTRY_CHARS)}…` : line;
 };
 
-/** Keep the NEWEST `limit` entries, not the oldest — a ledger whose
- * value is "what did we touch recently" must not freeze at its first 10
- * entries while everything later drowns in a permanent "(+N more)". */
-const capTail = (set: Set<string>, limit: number, joinWith: string): string => {
-  const arr = [...set].map(truncate);
-  if (arr.length <= limit) return arr.join(joinWith);
-  return `(+${arr.length - limit} earlier) ` + arr.slice(-limit).join(joinWith);
-};
-
 /** Formats TrackedCommandActivity into `[Commands Run]` body lines, one per
- * tracked command name that had at least one match. Entries are joined with
- * " | " rather than "," since a captured one-liner (e.g. `kubectl get
- * pods,svc`) can legitimately contain a comma. */
+ * tracked command name that had at least one match. Keeps the NEWEST
+ * entries: a ledger of what was run recently must not freeze at its first
+ * ten while everything later drowns in a permanent "(+N more)". */
 export const formatTrackedCommands = (act: TrackedCommandActivity): string[] => {
   const lines: string[] = [];
   for (const [name, entries] of act.byCommand) {
-    if (entries.size > 0) lines.push(`${name}: ${capTail(entries, 10, " | ")}`);
+    if (entries.size > 0) {
+      lines.push(`${name}: ${capItems([...entries].map(renderEntry), COMMANDS_PER_NAME, COMMAND_SEPARATOR, "tail")}`);
+    }
   }
   return lines;
 };
