@@ -88,6 +88,36 @@ describe("compile", () => {
   });
 });
 
+describe("compile merge of wrapped header sections", () => {
+  // The stored summary goes through wrapLongLines (120 chars), so a long item
+  // comes back split over indented continuation lines.
+  const sectionOf = (s: string, h: string) =>
+    (s.match(new RegExp(`\\[${h}\\]\\n([\\s\\S]*?)(?=\\n\\n|$)`))?.[1] ?? "").replace(/\n[ \t]+/g, " ");
+
+  it("keeps files on wrapped lines when the new turn also edits", () => {
+    const paths = Array.from({ length: 8 }, (_, i) => `src/some/deeply/nested/module-${i}/implementation-${i}.ts`);
+    const first = compile({
+      messages: [userMsg("edit"), ...paths.map((path) => assistantWithToolCall("edit", { path, edits: [] }))],
+    });
+    expect(first).toMatch(/\[Files And Changes\]\n.*\n  \S/); // really wrapped
+    const r = compile({
+      previousSummary: first,
+      messages: [userMsg("next"), assistantWithToolCall("edit", { path: "src/new-file.ts", edits: [] })],
+    });
+    const files = sectionOf(r, "Files And Changes");
+    for (let i = 0; i < 8; i++) expect(files).toContain(`implementation-${i}.ts`);
+  });
+
+  it("keeps the tail of a wrapped Session Goal item", () => {
+    const goal =
+      "Please migrate the billing service from the legacy cron scheduler to the new queue workers and keep the retry semantics identical for failed invoices";
+    const first = compile({ messages: [userMsg(goal)] });
+    expect(first).toMatch(/\[Session Goal\]\n.*\n  \S/); // really wrapped
+    const r = compile({ previousSummary: first, messages: [userMsg("also update the README for the queue workers")] });
+    expect(sectionOf(r, "Session Goal")).toContain(goal);
+  });
+});
+
 describe("compile fileOps wiring", () => {
   it("renders hook-provided file ops in the summary", () => {
     // Guards the seam: CompileInput.fileOps -> buildSections -> extractFiles.

@@ -2,6 +2,12 @@
 
 All notable changes to `@sting8k/pi-vcc` are documented in this file.
 
+## [Unreleased]
+
+### Fixes
+
+- **Summary items cut off on the next compaction** — the stored summary wraps long lines at 120 characters, and merging it into the next summary only read each item's first line. The rest was dropped: the tail of a long `[Session Goal]` item, and whole files from `[Files And Changes]` (e.g. 7 of 8 long paths) once a later compaction also changed files. Wrapped lines are now rejoined before merging.
+
 ## [0.8.2]
 
 ### Fixes
