@@ -180,6 +180,26 @@ describe("formatTrackedCommands", () => {
     expect([...act.byCommand.get("docker")!]).toEqual(["docker ps"]);
   });
 
+  it("redirection ampersands are not separators; && and & still are", () => {
+    const act = extractTrackedCommands(
+      [bash("bun test 2>&1 | tail -5"), bash("curl -s https://x &>/dev/null && bun run build"), bash("bun dev & sleep 1")],
+      ["bun", "curl"],
+    );
+    expect([...act.byCommand.get("bun")!]).toEqual(["bun test 2>&1", "bun run build", "bun dev"]);
+    expect([...act.byCommand.get("curl")!]).toEqual(["curl -s https://x &>/dev/null"]);
+  });
+
+  it("an apostrophe in a shell comment does not hide the next line", () => {
+    const act = extractTrackedCommands([bash("# don't fail\nbun test"), bash("# docker ps later\nls")], ["bun", "docker"]);
+    expect([...act.byCommand.get("bun")!]).toEqual(["bun test"]);
+    expect(act.byCommand.get("docker")!.size).toBe(0); // commented-out command is not a run
+  });
+
+  it("ssh -q is a boolean flag", () => {
+    const act = extractTrackedCommands([bash("ssh -q host docker ps")], TRACK);
+    expect([...act.byCommand.get("docker")!]).toEqual(["docker ps"]);
+  });
+
   it("keeps quotes as written (no stray quote stripped off the end)", () => {
     const act = extractTrackedCommands([bash("cd db && psql -c 'select 1'"), bash(`ssh prod "docker ps"`)], ["psql", "ssh"]);
     expect([...act.byCommand.get("psql")!]).toEqual(["psql -c 'select 1'"]);

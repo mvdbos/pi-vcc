@@ -182,6 +182,43 @@ describe("compile with trackCommands", () => {
     expect(r).not.toMatch(/earlier\) ssh/); // marker must not merge in as an entry
   });
 
+  it("merge round-trip keeps entries on wrapped continuation lines", () => {
+    // The stored summary goes through wrapLongLines, so a long section line
+    // comes back split over indented continuation lines.
+    const cmds = Array.from({ length: 6 }, (_, i) => `docker logs --tail 200 service-${i}-with-a-long-name`);
+    const first = compile({
+      messages: [userMsg("check logs"), ...cmds.map((command) => assistantWithToolCall("bash", { command }))],
+      trackCommands: ["docker"],
+    });
+    expect(first).toMatch(/\n  \S.*service-5/); // really wrapped
+    // The new turn must also have a docker entry: that is what forces a re-parse.
+    const r = compile({
+      previousSummary: first,
+      messages: [userMsg("next"), assistantWithToolCall("bash", { command: "docker ps" })],
+      trackCommands: ["docker"],
+    });
+    // Look in the section only: the brief transcript also lists the commands.
+    const section = (r.match(/\[Commands Run\]\n([\s\S]*?)(?=\n\n|$)/)?.[1] ?? "").replace(/\n[ \t]+/g, " ");
+    for (const c of cmds) expect(section).toContain(c);
+  });
+
+  it("merge round-trip keeps entries that contain ' | ' whole", () => {
+    const cmds = Array.from({ length: 10 }, (_, i) => `ssh host${i} 'docker ps | head -1'`);
+    const first = compile({
+      messages: [userMsg("check"), ...cmds.map((command) => assistantWithToolCall("bash", { command }))],
+      trackCommands: ["ssh"],
+    });
+    const r = compile({
+      previousSummary: first,
+      messages: [userMsg("next"), assistantWithToolCall("bash", { command: "ssh newhost uptime" })],
+      trackCommands: ["ssh"],
+    });
+    const section = (r.match(/\[Commands Run\]\n([\s\S]*?)(?=\n\n|$)/)?.[1] ?? "").replace(/\n[ \t]+/g, " ");
+    expect(section).toContain("(+1 earlier)"); // 11 commands, not fragments
+    for (let i = 1; i < 10; i++) expect(section).toContain(`ssh host${i} 'docker ps \\| head -1'`);
+    expect(section).toContain("ssh newhost uptime");
+  });
+
   it("multiline bash blocks are captured through the full compile pipeline, not just the first line", () => {
     const r = compile({
       messages: [

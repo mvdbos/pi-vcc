@@ -22,6 +22,12 @@ const unquotedSeparators = (cmd: string): number[] => {
     }
     if (c === "\\") i++; // `it\'s` is not an opening quote
     else if (c === "'" || c === '"') quote = c;
+    // A comment runs to the newline; its apostrophes (`# don't`) are not quotes.
+    else if (c === "#" && (i === 0 || /[\s;&|(]/.test(cmd[i - 1]))) {
+      while (i + 1 < cmd.length && cmd[i + 1] !== "\n") i++;
+    }
+    // `2>&1`, `<&3`, `&>file` are redirections, not separators.
+    else if (c === "&" && (cmd[i - 1] === ">" || cmd[i - 1] === "<" || cmd[i + 1] === ">")) continue;
     else if (c === ";" || c === "&" || c === "|" || c === "\n") seps.push(i);
   }
   return seps;
@@ -100,7 +106,7 @@ const findTopLevelInvocations = (cmd: string, name: string): number[] => {
  * the next token. Without this, `ssh -T host 'cmd'` misreads `host` as
  * -T's value and the remote command is never found. Clusters (`-tt`, `-NT`)
  * count as boolean when every letter is one. */
-const SSH_BOOL_FLAG = /^-[46ACfGgKkMNTtVvXxYyna]+$/;
+const SSH_BOOL_FLAG = /^-[46ACfGgKkMNTtVvXxYynaq]+$/;
 
 /** Locate the SSH target by TOKEN POSITION (via matchAll's own `.index`,
  * never a substring re-search, which would misfire on e.g.
@@ -196,9 +202,10 @@ export const extractTrackedCommands = (
 
 /** Render form: one line (a quoted multi-line argument such as
  * `python3 -c '...'` would otherwise break the section's line format),
- * truncated. */
+ * with an inner ` | ` escaped as ` \| ` so the merge, which splits a
+ * line's entries on ` | `, keeps the entry whole. Then truncated. */
 const truncate = (entry: string): string => {
-  const line = entry.replace(/\s+/g, " ");
+  const line = entry.replace(/\s+/g, " ").replaceAll(" | ", " \\| ");
   return line.length > MAX_ENTRY_CHARS ? `${line.slice(0, MAX_ENTRY_CHARS)}…` : line;
 };
 
