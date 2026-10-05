@@ -6,7 +6,7 @@ All notable changes to `@sting8k/pi-vcc` are documented in this file.
 
 ### Features
 
-- **Optional `[Commands Run]` section for infrastructure-operations sessions** - New `trackCommands` setting (default `[]`, e.g. `["ssh", "kubectl", "docker", "aws"]`). When non-empty, adds a section listing a shallow, truncated one-line snapshot of every invocation of a tracked command name seen in `bash` tool calls -- the same idea as `[Files And Changes]`/`[Commits]`, but for sessions that don't touch a git repo or edit files at all. Deliberately shallow (no per-command argument parsing), so there's no CLI-specific grammar to maintain as flags evolve; also detects a tracked command nested inside an `ssh host "<command>"` remote-command string. Empty by default, zero behavior change for existing configs.
+- **`trackCommands` setting and `[Commands Run]` section** — list the commands you want remembered across compactions (e.g. `["ssh", "kubectl", "docker"]`, `["psql", "terraform"]`, or a prefix like `"gh pr"`) and the summary keeps their invocations from `bash` tool calls: the 10 most recently used per command, each as written up to the next unquoted shell separator. Sees through `sudo`/`env`/`VAR=` prefixes and into an `ssh host '<command>'` remote command. Fills the gap for sessions where the commands are the record, such as ops work that never edits a file or touches git. Off by default (`[]`), no change for existing configs.
 
 ### Internal
 
