@@ -301,3 +301,22 @@ describe("vcc_recall search leaves the current turn out before ranking", () => {
     expect(out).toContain("#1 [assistant] retry loop was decided here");
   });
 });
+
+// ibis review: an interrupted call left no result, and a later call reused its id.
+describe("vcc_recall expand pairs only the call's own result", () => {
+  it("does not take a later call's result through a reused id", async () => {
+    const entries = [
+      msg("u0", "user", "run it"),
+      call("old", "call_1", "echo OLD"),
+      msg("u2", "user", "try again"),
+      call("new", "call_1", "echo NEW"),
+      result("r1", "call_1", "NEW_RESULT"),
+    ];
+    const file = writeSession(entries);
+    const ids = entries.map((e) => e.id);
+    const old = await recall(file, { expand: [1] }, ids);
+    expect(old).toContain("echo OLD");
+    expect(old).not.toContain("NEW_RESULT");
+    expect(await recall(file, { expand: [3] }, ids)).toContain("NEW_RESULT");
+  });
+});

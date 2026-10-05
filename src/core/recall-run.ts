@@ -202,6 +202,9 @@ const runExpand = (indices: number[], view: RecallView): string => {
     const { rendered, rawMessages } = v.load(true);
     for (let j = pos + 1; j < rendered.length && ids.size > 0; j++) {
       const r = rawMessages[j] as any;
+      // A call's results come before the next assistant message; past it, a
+      // reused id (after an interrupted call) belongs to a later call.
+      if (r?.role === "assistant") break;
       if (r?.role !== "toolResult" || !ids.has(r.toolCallId)) continue;
       ids.delete(r.toolCallId);
       const res = rendered[j];
