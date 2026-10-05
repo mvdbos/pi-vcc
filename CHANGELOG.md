@@ -7,6 +7,7 @@ All notable changes to `@sting8k/pi-vcc` are documented in this file.
 ### Fixes
 
 - **Commit subjects from heredoc messages** — the summary's commits section showed the heredoc opener (`$(cat <<'EOF'`) instead of the real subject for `git commit -m "$(cat <<'EOF' ... EOF)"`, the form coding agents use for multi-line messages. The subject is now read from the heredoc body; an empty or unparsable heredoc is skipped rather than recorded as garbage. (#38, thanks @renyddd)
+- **Compaction that did nothing** — Pi 1.0 stores the system prompt as a `role: "system"` session entry. When it was the only thing before the kept tail, pi-vcc summarized nothing: it stored an empty summary, kept every message, and the next turn compacted again. Such a cut now falls back to summarizing everything. Emptiness is judged the way the summarizer sees the prefix, so `custom_message` entries still count as content unless listed in `skipCustomTypes`. The token-budget re-cut gets the same guard. (#40, thanks @mvdbos; #43)
 
 ### Chores
 

@@ -1,6 +1,11 @@
 import { describe, test, expect } from "bun:test";
-import { buildOwnCut } from "../src/hooks/before-compact";
+import { applyTailBudget, buildOwnCut } from "../src/hooks/before-compact";
+import { convertToLlm } from "@earendil-works/pi-coding-agent";
 import { normalize } from "../src/core/normalize";
+
+// Blocks the summarizer would actually get: the hook runs convertToLlm before
+// normalize, which turns custom/branchSummary into user content.
+const renderedBlocks = (messages: any[]) => normalize(convertToLlm(messages) as any);
 
 const msg = (id: string, role: "user" | "assistant" | "toolResult", content = "x") => ({
   id,
@@ -300,7 +305,7 @@ describe("buildOwnCut: entries normalize() cannot render", () => {
     const cutIdx = entries.findIndex((e) => e.id === r.firstKeptEntryId);
     const summarized = r.compactAll ? entries : entries.slice(0, cutIdx);
     expect(summarized.length).toBeGreaterThan(0);
-    const blocks = normalize(summarized.map((e: any) => e.message) as any);
+    const blocks = renderedBlocks(summarized.map((e: any) => e.message));
     expect(blocks.length).toBeGreaterThan(0);
   });
 
@@ -322,7 +327,7 @@ describe("buildOwnCut: entries normalize() cannot render", () => {
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.firstKeptEntryId).not.toBe("x1");
-    const blocks = normalize(r.messages as any);
+    const blocks = renderedBlocks(r.messages);
     expect(blocks.length).toBeGreaterThan(0);
   });
 
@@ -336,6 +341,55 @@ describe("buildOwnCut: entries normalize() cannot render", () => {
     ]);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(normalize(r.messages as any).length).toBeGreaterThan(0);
+    expect(renderedBlocks(r.messages).length).toBeGreaterThan(0);
+  });
+
+  test("a custom_message prefix renders, so the split at the first user message stays", () => {
+    // convertToLlm turns custom_message into user content, so this prefix is not
+    // empty. Treating it as unrenderable would needlessly switch to compact-all.
+    const r = buildOwnCut([
+      sys("s1"),
+      customMsg("x1"),
+      msg("m1", "user", "go"),
+      msg("m2", "assistant", "a"),
+      msg("m3", "toolResult", "r"),
+      msg("m4", "assistant", "b"),
+    ]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.compactAll).toBe(false);
+    expect(r.firstKeptEntryId).toBe("m1");
+    expect(renderedBlocks(r.messages).length).toBeGreaterThan(0);
+  });
+
+  test("a custom_message listed in skipCustomTypes counts as unrenderable", () => {
+    // The hook drops it before summarizing, so [system, skipped custom] is empty.
+    const r = buildOwnCut(
+      [sys("s1"), customMsg("x1"), msg("m1", "user", "go"), msg("m2", "assistant", "a"), msg("m3", "toolResult", "r"), msg("m4", "assistant", "b")],
+      1,
+      ["skill-card"],
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.compactAll).toBe(true);
+  });
+
+  test("the budget re-cut never lands right after a lone system entry", () => {
+    // The first user message alone exceeds the budget, so the budget boundary
+    // falls at index 1, leaving [system] as the summarized prefix.
+    const entries = [
+      sys("s1"),
+      msg("m1", "user", "x".repeat(4000)),
+      msg("m2", "assistant", "a"),
+      msg("m3", "toolResult", "r"),
+      msg("m4", "assistant", "b"),
+    ];
+    const cut = buildOwnCut(entries);
+    expect(cut.ok && cut.compactAll).toBe(true);
+    const r = applyTailBudget(entries, cut, { maxTokens: 100, charsPerToken: 4 });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.budgetCut).toBeUndefined();
+    expect(renderedBlocks(r.messages).length).toBeGreaterThan(0);
   });
 });

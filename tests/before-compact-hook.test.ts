@@ -1011,7 +1011,10 @@ describe("registerBeforeCompactHook: skipCustomTypes", () => {
   // Smart-keep lifts the tail to ~2 user turns, so entries before u2 land
   // in the summarized window: [c1, u1, a1]. Custom entries must sit early
   // to be inside that window.
+  // u0 keeps the summarized prefix non-empty once c1 is filtered out; without
+  // it, skipping c1 would leave nothing to summarize and the cut must move.
   const baseEntries = () => [
+    msg("u0", "user", "start"),
     custom("c1", "memory-inject", "INJECTED_BOILERPLATE_XYZ"),
     msg("u1", "user", "go"),
     msg("a1", "assistant", "reply"),
