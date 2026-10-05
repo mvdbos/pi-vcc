@@ -7,6 +7,7 @@ import type { RecallScope } from "./recall-scope";
 import type { RecallRequest } from "./recall-request";
 
 export const SEARCH_PAGE_SIZE = 5;
+export const RANGE_PAGE_SIZE = 20;
 export const RECENT_COUNT = 25;
 
 /**
@@ -80,6 +81,9 @@ export const runRecall = (request: RecallRequest, view: RecallView, hints: Recal
       return (scopeAll ? "Scope: all\n\n" : "") + formatRecallOutput(expanded);
     }
 
+    case "range":
+      return runRange(action.range, action.page, view);
+
     case "search":
       return runSearch(action.query, action.page, view, hints);
 
@@ -88,6 +92,44 @@ export const runRecall = (request: RecallRequest, view: RecallView, hints: Recal
       return (scopeAll ? "Scope: all\n\n" : "") + formatRecallOutput(rendered.slice(-RECENT_COUNT), action.query);
     }
   }
+};
+
+/**
+ * Entries #from..#to in order, RANGE_PAGE_SIZE per page, same per-entry clip
+ * as search and recent. Indices are the global #N space shared with summaries
+ * (global-indices.ts), so a ref copied from a summary lands on its message.
+ */
+const runRange = (range: unknown[], page: number, view: RecallView): string => {
+  const [from, to] = range;
+  if (range.length !== 2 || !Number.isInteger(from) || !Number.isInteger(to) || (from as number) < 0 || (from as number) > (to as number)) {
+    return `Invalid range ${JSON.stringify(range)}: use range:[from, to] with two #N indices, from <= to.`;
+  }
+  const lo = from as number, hi = to as number;
+  const scopeAll = view.scope === "all";
+  const { rendered } = view.load(false);
+  const entries = rendered.filter((m) => m.index >= lo && m.index <= hi);
+
+  if (entries.length === 0) {
+    if (!scopeAll && loadAllMessages(view.sessionFile, false).rendered.some((m) => m.index >= lo && m.index <= hi)) {
+      return `No messages #${lo}..#${hi} on the active lineage; they are on another branch. Use scope:'all' to reach them.`;
+    }
+    const last = rendered[rendered.length - 1];
+    return `No messages #${lo}..#${hi} in session history${last ? ` (last entry is #${last.index})` : ""}.`;
+  }
+
+  const totalPages = Math.ceil(entries.length / RANGE_PAGE_SIZE);
+  const counts = `${entries.length} messages${scopeAll ? ", scope: all" : ""}`;
+  if (page > totalPages) {
+    return `Page ${page} is outside the available range 1-${totalPages} (#${lo}..#${hi}: ${counts}). Use a page between 1 and ${totalPages}.`;
+  }
+  const start = (page - 1) * RANGE_PAGE_SIZE;
+  const header = totalPages > 1
+    ? `Range #${lo}..#${hi}, page ${page}/${totalPages} (${counts})`
+    : `Range #${lo}..#${hi} (${counts})`;
+  const footer = page < totalPages
+    ? `\n--- Use range:[${lo}, ${hi}] page:${page + 1}${scopeAll ? " scope:'all'" : ""} for the next ${RANGE_PAGE_SIZE} ---`
+    : "";
+  return formatRecallOutput(entries.slice(start, start + RANGE_PAGE_SIZE), undefined, header) + footer;
 };
 
 const runSearch = (query: string, page: number, view: RecallView, hints: RecallPagingHints): string => {

@@ -8,6 +8,7 @@ export type RecallAction =
   | { kind: "drill"; target: DrillTarget }
   | { kind: "touched"; page?: number }
   | { kind: "expand"; indices: number[] }
+  | { kind: "range"; range: unknown[]; page: number }
   | { kind: "search"; query: string; page: number }
   | { kind: "recent"; query?: string };
 
@@ -19,6 +20,7 @@ export interface RecallRequest {
 export interface RecallToolParams {
   query?: string;
   expand?: number[];
+  range?: unknown[];
   page?: number;
   scope?: string;
   mode?: string;
@@ -26,8 +28,8 @@ export interface RecallToolParams {
 
 /**
  * Tool params -> request. The precedence lives here and only here:
- * #N:path drill-down, then mode:'touched', then expand, then query search,
- * then the most recent entries.
+ * #N:path drill-down, then mode:'touched', then expand, then range, then
+ * query search, then the most recent entries.
  */
 export const parseToolRequest = (params: RecallToolParams): RecallRequest => {
   const scope = normalizeRecallScope(params.scope);
@@ -37,6 +39,9 @@ export const parseToolRequest = (params: RecallToolParams): RecallRequest => {
   if (normalizeRecallMode(params.mode) === "touched") return { scope, action: { kind: "touched", page: params.page } };
   const indices = [...new Set(params.expand ?? [])];
   if (indices.length > 0) return { scope, action: { kind: "expand", indices } };
+  if (Array.isArray(params.range) && params.range.length > 0) {
+    return { scope, action: { kind: "range", range: params.range, page: Math.max(1, params.page ?? 1) } };
+  }
   if (q) return { scope, action: { kind: "search", query: params.query!, page: Math.max(1, params.page ?? 1) } };
   return { scope, action: { kind: "recent", query: params.query } };
 };
