@@ -268,10 +268,22 @@ export const compileRanked = (input: RankedCompileInput): string =>
     preserveFreshBriefOnMerge: true,
   });
 
-const stripRecallNote = (text: string): string => {
-  // Remove trailing RECALL_NOTE (and any separators surrounding it) if present.
-  // Handles both current format (---\n\nNOTE) and bare trailing NOTE.
-  const idx = text.lastIndexOf(RECALL_NOTE);
-  if (idx < 0) return text;
-  return text.slice(0, idx).replace(/\s*(?:\n\n---\n\n)?\s*$/, "").trimEnd();
-};
+/**
+ * RECALL_NOTE as stored: wrapLongLines breaks it across lines (it is longer
+ * than the wrap width), so match its words separated by any whitespace,
+ * together with the separator in front of it.
+ */
+const RECALL_NOTE_RE = new RegExp(
+  "\\n*(?:---\\n+)?" +
+    RECALL_NOTE.split(/\s+/).map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+") +
+    "\\n*",
+  "g",
+);
+
+/**
+ * Remove every RECALL_NOTE from a previous summary before merging. The exact
+ * match this replaced never found the wrapped note, so each compaction kept
+ * the old note inside the brief and stacked one more; this also cleans those.
+ */
+const stripRecallNote = (text: string): string =>
+  text.replace(RECALL_NOTE_RE, "\n\n").trimEnd();

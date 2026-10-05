@@ -244,3 +244,29 @@ describe("compile fileOps wiring", () => {
     expect(out).toContain("changed-by-hook.ts");
   });
 });
+
+describe("compile: the recall note across compactions", () => {
+  const notes = (s: string) => s.match(/Use `vcc_recall` to search/g)?.length ?? 0;
+
+  it("keeps exactly one note, at the end, after repeated compactions", () => {
+    let summary: string | undefined;
+    for (let round = 1; round <= 3; round++) {
+      summary = compile({
+        messages: [userMsg(`round ${round} question`), assistantText(`round ${round} answer`)],
+        previousSummary: summary,
+      });
+      expect(notes(summary)).toBe(1);
+      expect(summary.trimEnd().endsWith("Do not redo work already\ncompleted.")).toBe(true);
+    }
+    expect(summary).toContain("round 1 question");
+    expect(summary).toContain("round 3 answer");
+  });
+
+  it("cleans notes stacked inside a summary written by an older version", () => {
+    const note = "---\n\nUse `vcc_recall` to search for prior work, decisions, and context from before this summary. Do not redo work already\ncompleted.";
+    const stacked = `[Session Goal]\n- fix the bucket\n\n---\n\n[user]\nfix the bucket\n\n${note}\n\n[assistant]\ndone\n\n${note}`;
+    const out = compile({ messages: [userMsg("next"), assistantText("ok")], previousSummary: stacked });
+    expect(notes(out)).toBe(1);
+    expect(out).toContain("[user]\nfix the bucket\n\n[assistant]\ndone");
+  });
+});
