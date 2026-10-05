@@ -10,6 +10,7 @@ All notable changes to `@sting8k/pi-vcc` are documented in this file.
 - **`expand` of a tool call includes its result** — the result is matched by tool call id and clipped at 4,000 chars, with the `expand` that reads all of it.
 - **Off-path fallback** — when the current conversation path has nothing for a query, range, expand or `#N:path`, recall answers from edited or retried branches and says so on the first line. Before, it answered "No matches" or "Cannot expand" unless the agent knew to retry with `scope: "all"`.
 - **Next-step lines** — search results end with a ready `range`/`expand` around the first hit, and `mode: "touched"` with a ready `#N:path` call. A range past the end is read up to the last entry.
+- **Forgiving arguments** — mistakes with only one possible meaning are repaired before pi validates the call: `"459"` or `"#459"` for a number, a single index for `expand` or `range`, `"10-20"` or a reversed range, `"ALL"`, and `mode: "all"` meant as `scope: "all"` (which pi used to reject). Anything else unusable is named on an `Ignored:` line.
 - **No more silently dropped params** — when a call sets a param its action cannot use (e.g. `query` next to `expand`), the output names it on the first line. Default values such as `page: 1` are not reported.
 
 ### Changed
