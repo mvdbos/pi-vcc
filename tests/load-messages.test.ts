@@ -27,6 +27,83 @@ describe("loadAllMessages", () => {
     }
   });
 
+  it("skips system messages but keeps their #N index slot", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-vcc-load-system-"));
+    const file = join(dir, "session.jsonl");
+    try {
+      const lines = [
+        JSON.stringify({ type: "message", id: "s0", message: { role: "system", content: "", sections: { preamble: "p" } } }),
+        JSON.stringify({ type: "message", id: "m1", message: { role: "user", content: "u1" } }),
+        JSON.stringify({ type: "message", id: "s1", message: { role: "system", content: "", toolsAdded: [] } }),
+        JSON.stringify({ type: "message", id: "m2", message: { role: "assistant", content: [{ type: "text", text: "a1" }] } }),
+      ];
+      writeFileSync(file, lines.join("\n") + "\n", "utf8");
+
+      const loaded = loadAllMessages(file, false);
+      expect(loaded.rendered.map((e) => [e.index, e.role])).toEqual([[1, "user"], [3, "assistant"]]);
+      expect(loaded.rawMessages.map((m) => m.role)).toEqual(["user", "assistant"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("loads JSONL incrementally across read-chunk boundaries", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-vcc-load-chunked-"));
+    const file = join(dir, "session.jsonl");
+    try {
+      const largeText = `${"x".repeat(70_000)} unicode: λ`;
+      const lines = [
+        JSON.stringify({ type: "message", id: "m1", message: { role: "user", content: largeText } }),
+        JSON.stringify({ type: "message", id: "m2", message: { role: "user", content: "after boundary" } }),
+      ];
+      // Deliberately omit the final newline to cover the buffered tail as well.
+      writeFileSync(file, lines.join("\n"), "utf8");
+
+      const loaded = loadAllMessages(file, true);
+      expect(loaded.rendered).toHaveLength(2);
+      expect(loaded.rendered[0].summary).toBe(largeText);
+      expect(loaded.rendered[1].summary).toBe("after boundary");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("treats a not-yet-written session file as empty history instead of throwing ENOENT", () => {
+    // Fresh session: pi has not persisted any entry, so the JSONL does not exist.
+    const dir = mkdtempSync(join(tmpdir(), "pi-vcc-load-missing-"));
+    try {
+      const loaded = loadAllMessages(join(dir, "nope", "session.jsonl"), false);
+      expect(loaded.rendered).toEqual([]);
+      expect(loaded.rawMessages).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns empty history for an existing but empty session file", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-vcc-load-empty-"));
+    const file = join(dir, "session.jsonl");
+    try {
+      writeFileSync(file, "", "utf8");
+      const loaded = loadAllMessages(file, false);
+      expect(loaded.rendered).toEqual([]);
+      expect(loaded.rawMessages).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("still surfaces read errors that are not 'file does not exist'", () => {
+    // A directory is readable-but-not-a-file (EISDIR): a real I/O problem, not
+    // an empty history. It must not be swallowed.
+    const dir = mkdtempSync(join(tmpdir(), "pi-vcc-load-eisdir-"));
+    try {
+      expect(() => loadAllMessages(dir, false)).toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("filters messages by allowed lineage entry IDs and preserves original message index", () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-vcc-load-filter-"));
     const file = join(dir, "session.jsonl");

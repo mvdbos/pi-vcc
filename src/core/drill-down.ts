@@ -248,13 +248,16 @@ export function expandEntryFile(
   offset?: number,
   limit?: number,
 ): string {
-  const { rawMessages } = loadAllMessages(sessionFile, true);
+  const { rendered, rawMessages } = loadAllMessages(sessionFile, true);
+  // Look up by `#N` index, not array position: skipped entries (system
+  // messages) keep their index but are absent from the arrays.
+  const pos = rendered.findIndex((r) => r.index === entryIndex);
 
-  if (entryIndex < 0 || entryIndex >= rawMessages.length) {
+  if (pos < 0) {
     return `Entry #${entryIndex} not found in session history.`;
   }
 
-  const msg = rawMessages[entryIndex];
+  const msg = rawMessages[pos];
   const content = msg.content as unknown[];
   const calls = findContentBearingCalls(content);
 

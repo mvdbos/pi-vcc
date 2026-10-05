@@ -1,10 +1,24 @@
 import { describe, test, expect } from "bun:test";
-import { buildOwnCut } from "../src/hooks/before-compact";
+import { applyTailBudget, buildOwnCut } from "../src/hooks/before-compact";
+import { convertToLlm } from "@earendil-works/pi-coding-agent";
+import { normalize } from "../src/core/normalize";
+
+// Blocks the summarizer would actually get: the hook runs convertToLlm before
+// normalize, which turns custom/branchSummary into user content.
+const renderedBlocks = (messages: any[]) => normalize(convertToLlm(messages) as any);
 
 const msg = (id: string, role: "user" | "assistant" | "toolResult", content = "x") => ({
   id,
   type: "message",
   message: { role, content },
+});
+
+// Pi 1.0 persists the prompt/tool-loadout delta as role:"system" message
+// entries (agent-session _preparePromptAndToolLoadout).
+const sys = (id: string, content = "Available tools: read, bash, edit") => ({
+  id,
+  type: "message",
+  message: { role: "system", content },
 });
 
 const comp = (id: string, firstKeptEntryId?: string) => ({
@@ -229,5 +243,153 @@ describe("buildOwnCut", () => {
     expect(r.messages).toHaveLength(2);
     expect(r.keptUserTurns).toBe(2);
     expect(r.totalUserTurns).toBe(3);
+  });
+});
+
+describe("buildOwnCut: entries normalize() cannot render", () => {
+  // Pi 1.0 persists the prompt/tool-loadout delta as role:"system" message
+  // entries; extensions inject custom_message / branch_summary entries. None of
+  // those roles has a branch in normalizeOne, so they render no block. If one
+  // becomes the cut boundary the summarized region carries no renderable
+  // content: compile() returns "", the hook stores an empty summary while
+  // keeping every message, context never shrinks, and the next agent_end
+  // re-triggers compaction indefinitely.
+  const customMsg = (id: string, content = "injected skill card text") => ({
+    id,
+    type: "custom_message",
+    customType: "skill-card",
+    content,
+    display: true,
+  });
+  const singlePromptThenAutonomous = () => [
+    sys("s1"),
+    msg("m1", "user", "go"),
+    msg("m2", "assistant", "calling tool"),
+    msg("m3", "toolResult", "result"),
+    msg("m4", "assistant", "more"),
+    msg("m5", "toolResult", "result2"),
+    msg("m6", "assistant", "done"),
+  ];
+  const withoutSystemEntry = () => singlePromptThenAutonomous().slice(1);
+
+  test("system entry is not eligible as a cut boundary", () => {
+    const r = buildOwnCut(singlePromptThenAutonomous());
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.firstKeptEntryId).not.toBe("s1");
+  });
+
+  test("leading system entry does not change the cut decision", () => {
+    const withSys = buildOwnCut(singlePromptThenAutonomous());
+    const without = buildOwnCut(withoutSystemEntry());
+    expect(withSys.ok).toBe(true);
+    expect(without.ok).toBe(true);
+    if (!withSys.ok || !without.ok) return;
+    // Same decision: the system entry is not conversation content, so it must
+    // not flip a compact-all into a split at the first user message.
+    expect(withSys.compactAll).toBe(without.compactAll);
+    expect(withSys.firstKeptEntryId).toBe(without.firstKeptEntryId);
+    // The window itself still carries the entry (upstream keeps custom/
+    // branch_summary in the summarizer input for the same reason).
+    expect(withSys.messages).toHaveLength(without.messages.length + 1);
+    for (const role of withSys.messages.map((m: any) => m.role)) {
+      expect(["system", "user", "assistant", "toolResult"]).toContain(role);
+    }
+  });
+
+  test("the summarized region always contains at least one renderable block", () => {
+    const entries = singlePromptThenAutonomous();
+    const r = buildOwnCut(entries);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    const cutIdx = entries.findIndex((e) => e.id === r.firstKeptEntryId);
+    const summarized = r.compactAll ? entries : entries.slice(0, cutIdx);
+    expect(summarized.length).toBeGreaterThan(0);
+    const blocks = renderedBlocks(summarized.map((e: any) => e.message));
+    expect(blocks.length).toBeGreaterThan(0);
+  });
+
+  test("a window of only system entries cancels instead of summarizing nothing", () => {
+    const r = buildOwnCut([sys("s1"), sys("s2"), sys("s3")]);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.reason).toBe("no_live_messages");
+  });
+
+  test("custom_message entry is not eligible as a cut boundary", () => {
+    const r = buildOwnCut([
+      customMsg("x1"),
+      msg("m1", "user", "go"),
+      msg("m2", "assistant", "calling tool"),
+      msg("m3", "toolResult", "result"),
+      msg("m4", "assistant", "done"),
+    ]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.firstKeptEntryId).not.toBe("x1");
+    const blocks = renderedBlocks(r.messages);
+    expect(blocks.length).toBeGreaterThan(0);
+  });
+
+  test("a trailing custom_message does not strand an empty summarized region", () => {
+    const r = buildOwnCut([
+      msg("m1", "user", "go"),
+      msg("m2", "assistant", "a"),
+      msg("m3", "toolResult", "r"),
+      msg("m4", "assistant", "b"),
+      customMsg("x1"),
+    ]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(renderedBlocks(r.messages).length).toBeGreaterThan(0);
+  });
+
+  test("a custom_message prefix renders, so the split at the first user message stays", () => {
+    // convertToLlm turns custom_message into user content, so this prefix is not
+    // empty. Treating it as unrenderable would needlessly switch to compact-all.
+    const r = buildOwnCut([
+      sys("s1"),
+      customMsg("x1"),
+      msg("m1", "user", "go"),
+      msg("m2", "assistant", "a"),
+      msg("m3", "toolResult", "r"),
+      msg("m4", "assistant", "b"),
+    ]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.compactAll).toBe(false);
+    expect(r.firstKeptEntryId).toBe("m1");
+    expect(renderedBlocks(r.messages).length).toBeGreaterThan(0);
+  });
+
+  test("a custom_message listed in skipCustomTypes counts as unrenderable", () => {
+    // The hook drops it before summarizing, so [system, skipped custom] is empty.
+    const r = buildOwnCut(
+      [sys("s1"), customMsg("x1"), msg("m1", "user", "go"), msg("m2", "assistant", "a"), msg("m3", "toolResult", "r"), msg("m4", "assistant", "b")],
+      1,
+      ["skill-card"],
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.compactAll).toBe(true);
+  });
+
+  test("the budget re-cut never lands right after a lone system entry", () => {
+    // The first user message alone exceeds the budget, so the budget boundary
+    // falls at index 1, leaving [system] as the summarized prefix.
+    const entries = [
+      sys("s1"),
+      msg("m1", "user", "x".repeat(4000)),
+      msg("m2", "assistant", "a"),
+      msg("m3", "toolResult", "r"),
+      msg("m4", "assistant", "b"),
+    ];
+    const cut = buildOwnCut(entries);
+    expect(cut.ok && cut.compactAll).toBe(true);
+    const r = applyTailBudget(entries, cut, { maxTokens: 100, charsPerToken: 4 });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.budgetCut).toBeUndefined();
+    expect(renderedBlocks(r.messages).length).toBeGreaterThan(0);
   });
 });

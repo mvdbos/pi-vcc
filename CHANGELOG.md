@@ -2,6 +2,96 @@
 
 All notable changes to `@sting8k/pi-vcc` are documented in this file.
 
+## [0.9.0]
+
+### Features
+
+- **`trackCommands` setting and `[Tracked Commands]` section** — list the commands you want remembered across compactions (e.g. `["ssh", "kubectl", "docker"]`, `["psql", "terraform"]`, or a prefix like `"gh pr"`) and the summary keeps their invocations from `bash` tool calls: the 10 most recently used per command, each as written up to the next unquoted shell separator. Sees through `sudo`/`env`/`VAR=` prefixes and into an `ssh host '<command>'` remote command. Fills the gap for sessions where the commands are the record, such as ops work that never edits a file or touches git. Off by default (`[]`), no change for existing configs.
+
+### Docs
+
+- **Shorter README** — repetition removed, the example summary now matches real output, and the size/latency figures were remeasured over 1,884 real sessions (97.6% median size reduction, 1 ms median compaction).
+
+### Internal
+
+- Extracted `mergeFileLines`'s category-parse-merge-render logic into generic, reusable `mergeCategorizedLines`/`formatCategorizedLines` helpers (no behavior change to `[Files And Changes]`), now shared with `[Tracked Commands]`'s merge logic.
+
+## [0.8.3]
+
+### Fixes
+
+- **Summary items cut off on the next compaction** — the stored summary wraps long lines at 120 characters, and merging it into the next summary only read each item's first line. The rest was dropped: the tail of a long `[Session Goal]` item, and whole files from `[Files And Changes]` (e.g. 7 of 8 long paths) once a later compaction also changed files. Wrapped lines are now rejoined before merging.
+
+## [0.8.2]
+
+### Fixes
+
+- **Commit subjects from heredoc messages** — the summary's commits section showed the heredoc opener (`$(cat <<'EOF'`) instead of the real subject for `git commit -m "$(cat <<'EOF' ... EOF)"`, the form coding agents use for multi-line messages. The subject is now read from the heredoc body; an empty or unparsable heredoc is skipped rather than recorded as garbage. (#38, thanks @renyddd)
+- **Compaction that did nothing** — Pi 1.0 stores the system prompt as a `role: "system"` session entry. When it was the only thing before the kept tail, pi-vcc summarized nothing: it stored an empty summary, kept every message, and the next turn compacted again. Such a cut now falls back to summarizing everything. Emptiness is judged the way the summarizer sees the prefix, so `custom_message` entries still count as content unless listed in `skipCustomTypes`. The token-budget re-cut gets the same guard. (#40, thanks @mvdbos; #43)
+
+### Chores
+
+- **Smaller npm package** — `package.json` now has a `files` whitelist (`index.ts`, `src/`, `CHANGELOG.md`; npm adds `README.md`, `LICENSE`, `package.json`). The tarball no longer ships `demo.gif` (16.4 MB), `tests/`, `benchmarks/`, `scripts/`, `.github/` or `bun.lock`. The README demo image now uses an absolute GitHub URL so it still renders on npmjs.com.
+
+## [0.8.1]
+
+### Fixes
+
+- **Pi 1.0 compatibility** — peer range widened to `>=0.74.0 <2.0.0`. Pi 1.0 persists the prompt/tool loadout as `role: "system"` session messages; `vcc_recall` / `/vcc-recall` no longer list them as empty `assistant` entries. They keep their `#N` slot so existing refs stay stable, and `#N:file` drill-down now resolves by index instead of array position. Compaction itself was already unaffected.
+
+## [0.8.0]
+
+### Features
+
+- **`skipForProviders` setting** — list of provider ids for which pi-vcc defers compaction entirely, so a provider-specific or remote compaction extension can take over. Matched case-insensitively against `ctx.model.provider` on every compaction (a `/model` switch mid-session is respected); explicit `/pi-vcc` always runs; an undefined model never skips. Needed because `session_before_compact` is last-result-wins by extension load order, so there was no way for users to pick the compactor deterministically. (fixes #27)
+- **`skipCustomTypes` setting** — list of `customType` values whose `custom_message` entries are dropped from the summarizer input. Aimed at per-turn boilerplate injected by other extensions (skill cards, guidance blocks) that is regenerated every turn. Exact, case-sensitive match. Only the summary input is filtered: cut selection, token calibration, `firstKeptEntryId` and kept-turn counts are unchanged. Deliberately keyed on `customType` rather than `display: false`, which is a TUI-visibility flag that extensions also use for durable content. (refs #23)
+
+### Fixes
+
+- **Stale stats toast and spurious auto-continue on another extension's compaction.** `session_compact` only checked `event.fromExtension`, so when a different extension produced the compaction pi-vcc still showed its own stats toast with numbers from its last run and could queue its auto-continue. The handler now checks the persisted `compactionEntry.details.compactor === "pi-vcc"` stamp, which is also correct when another extension's `session_before_compact` result wins via load order.
+
+## [0.7.3]
+
+### Fixes
+
+- **Compaction summaries now emit session-global `#N` refs (the recall index space).** Summaries previously numbered the selected compaction window from zero, while `vcc_recall` resolves `#N` against every `type == "message"` entry in the session file. From the second compaction on — and on any session containing abandoned branches — emitted `(#N)` refs retrieved unrelated operations or failed lineage checks. The hook now maps each selected entry id to its global index via a shared counting rule (`src/core/global-indices.ts`, used by both recall and the summary path) and threads per-message indices through `compile`/`compileRanked`; unresolvable positions (custom messages, branch summaries, ambiguous ids, or no index map at all) render no ref instead of a wrong one. Summary details version bumped to `2` to mark the new ref scheme. Ported from k0valik/pi-blackhole commit `f82e07a` — thanks @k0valik for the report and reference fix. Known limitations: summaries minted before this fix keep their window-relative refs until they roll off the brief budget, and branched sessions (`/tree`) write a new file where copied refs point at the old file's index space (unchanged from before).
+
+### Other
+
+- **Added MIT license** — `LICENSE` file plus `"license": "MIT"` in `package.json` (fixes #31).
+- **Added CI** — a minimal GitHub Actions test workflow (`bun test` on pull requests and master pushes) with supply-chain hygiene: `pull_request` trigger (never `pull_request_target`), `contents: read` token scope, commit-SHA-pinned actions, `persist-credentials: false`, pinned `bun-version`, and `bun install --frozen-lockfile --ignore-scripts`.
+- **Committed `bun.lock`** — it was gitignored and stale since April, so installs drifted (the `pi-coding-agent` peer range resolved to latest instead of the version under development). The refreshed lockfile pins pi `0.85.1` and makes CI reproducible.
+- **`tests/real-sessions.test.ts` skips cleanly when no `~/.pi` sessions exist** (CI runners) instead of failing on `ENOENT`.
+
+## [0.7.2]
+
+### Fixes
+
+- **Recall: stream session JSONL files larger than V8's string limit** - Recall now parses session transcripts incrementally instead of decoding the entire file as one UTF-8 string, preventing `ERR_STRING_TOO_LONG` on long-running sessions. Message indices, lineage filtering, malformed-line handling, missing-file behavior, and final records without a trailing newline are preserved. Verified against a 536,885,410-byte synthetic transcript: the previous loader failed at V8's 536,870,888-character limit, while the streamed loader returned the expected messages and global indices.
+
+## [0.7.1]
+
+### Fixes
+
+- **Compaction: prevent duplicate ghost turns on Pi 0.84.4+** - Pi core now resumes runs after automatic compaction, making pi-vcc's queued invisible follow-up redundant and allowing it to land as an unsolicited turn after the resumed run finishes. `continueAfterThresholdCompact` is now a compatibility permission: when enabled, pi-vcc sends its fallback only on Pi versions older than 0.84.4. Existing configs with `true` are protected automatically; malformed runtime versions fail safe by sending nothing. Explicit follow-up prompts and Pi-owned overflow retries are unchanged.
+- **Recall: handle brand-new sessions before their JSONL exists** - `/pi-vcc-recall` and shared recall paths now treat a missing current-session file as empty history instead of throwing `ENOENT`, returning the existing friendly no-history/no-match response. Other filesystem errors still surface, and recall remains scoped to the current session.
+
+## [0.7.0]
+
+### Features
+
+- **Recall searches bounded tool-call arguments** — commands, write content, edit text, queries, and other string arguments that previously existed in the session but were invisible to search are now indexed under one shared 2,000-character budget per message. Search snippets come from the same bounded text, while `vcc_recall` excludes its own invocation and output to prevent repeat-query feedback loops. File paths, global `#N` indices, lineage scope, `expand`, `mode:"touched"`, and `#N:path` keep their existing semantics.
+
+### Changes
+
+- **Recall trims noisy result tails and bounds pagination** — multi-term natural-language searches drop hits below 20% of the top BM25 score; single-term and regex searches skip that floor. Every search path is capped at 50 results (10 pages), with explicit `showing 50 of N matches` and out-of-range page messages instead of silently understating or misreporting results. On two real-session benchmark runs, the combined policy produced zero new empty searches and zero top-result changes, reduced median result counts from 32→18 and 29.5→20, and bounded p90 at 50.
+
+## [0.6.1]
+
+### Fixes
+
+- **Recall: `expand` now works when the original `query` is retained** — callers naturally pass the search query together with selected entry indices, but that combination silently re-ran the clipped search path instead of returning full entries. A non-empty `expand` now takes precedence over search while preserving lineage and `scope` validation.
+
 ## [0.6.0]
 
 ### Features

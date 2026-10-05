@@ -29,15 +29,46 @@ export interface PiVccSettings {
    */
   smartKeepTail: boolean;
   /**
-   * When true (default), pi-vcc asks the agent to continue after a successful
+   * Permission (not a guarantee) for pi-vcc's own continue after a successful
    * automatic compaction (threshold, or overflow after the assistant already
-   * finished with stop). This avoids a UX cliff where the agent finishes a response,
+   * finished with stop). It avoids a UX cliff where the agent finishes a response,
    * immediately compacts, and then stops instead of continuing the task.
+   *
+   * false = never continue. true (default) = continue only on Pi versions that
+   * still need the fallback: Pi >= PI_SELF_RESUME_VERSION resumes the run itself,
+   * so pi-vcc stays silent there even when this is true (issue #22). A version
+   * that cannot be parsed is treated as new Pi, i.e. no continue.
    * Overflow retry is still owned by pi-core via willRetry.
    */
   continueAfterThresholdCompact: boolean;
   /** Write debug snapshot to /tmp/pi-vcc-debug.json on each compaction. */
   debug: boolean;
+  /**
+   * Providers for which pi-vcc defers compaction entirely (issue #27), e.g.
+   * providers that ship their own remote compaction via another extension.
+   * Matched case-insensitively against ctx.model.provider (Pi's provider id —
+   * check /model; Grok is "xai", not "grok"). Explicit /pi-vcc bypasses the
+   * skip. Unknown/undefined model never skips.
+   */
+  skipForProviders: string[];
+  /**
+   * customType values whose custom_message entries are excluded from the
+   * summarizer input. Opt-in (default []). Intended for per-turn boilerplate
+   * injected by other extensions that is regenerated every turn.
+   * Exact match on customType. Filtering happens right before summarization:
+   * cut selection, token calibration, firstKeptEntryId and kept-user-turn
+   * counting are all unaffected.
+   */
+  skipCustomTypes: string[];
+  /**
+   * Commands whose bash invocations are kept in a "[Tracked Commands]" section,
+   * e.g. `["ssh", "kubectl"]`, `["psql"]`, or a prefix like `"gh pr"`. Each
+   * entry is the command as written up to the next unquoted separator
+   * (`;`/`&`/`|`/newline) -- no per-command argument parsing. Also scans an
+   * `ssh host "<remote command>"` string for the other tracked names.
+   * Empty by default (feature off).
+   */
+  trackCommands: string[];
 }
 
 export const DEFAULT_SETTINGS: PiVccSettings = {
@@ -45,6 +76,9 @@ export const DEFAULT_SETTINGS: PiVccSettings = {
   smartKeepTail: true,
   continueAfterThresholdCompact: true,
   debug: false,
+  skipForProviders: [],
+  skipCustomTypes: [],
+  trackCommands: [],
 };
 
 const readJson = (path: string): Record<string, unknown> | null => {
@@ -55,10 +89,23 @@ const readJson = (path: string): Record<string, unknown> | null => {
   }
 };
 
+/** Coerce a config value to string[], failing closed to []. */
+const coerceStringArray = (v: unknown): string[] =>
+  Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+
 export function loadSettings(): PiVccSettings {
   const parsed = readJson(settingsPath());
   if (!parsed || typeof parsed !== "object") return { ...DEFAULT_SETTINGS };
-  return { ...DEFAULT_SETTINGS, ...(parsed as Partial<PiVccSettings>) };
+  const merged = { ...DEFAULT_SETTINGS, ...(parsed as Partial<PiVccSettings>) };
+  // A blind spread would leak a malformed array value (e.g. a bare string,
+  // where .includes becomes substring matching) into the provider check.
+  merged.skipForProviders = coerceStringArray(parsed.skipForProviders);
+  merged.skipCustomTypes = coerceStringArray(parsed.skipCustomTypes);
+  // Blank names would match every command; duplicates would repeat lines.
+  merged.trackCommands = [
+    ...new Set(coerceStringArray(parsed.trackCommands).map((s) => s.trim()).filter(Boolean)),
+  ];
+  return merged;
 }
 
 /**

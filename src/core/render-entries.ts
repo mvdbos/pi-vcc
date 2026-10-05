@@ -1,4 +1,4 @@
-import type { Message } from "@earendil-works/pi-ai";
+import type { Message, ToolCall } from "@earendil-works/pi-ai";
 import { clip, textOf } from "./content";
 import { summarizeToolArgs } from "./tool-args";
 import { extractPath } from "./tool-args";
@@ -10,18 +10,19 @@ export interface RenderedEntry {
   files?: string[];
 }
 
+const toolCallParts = (content: Message["content"]): ToolCall[] => {
+  if (!content || typeof content === "string") return [];
+  return (content as { type: string }[]).filter((c): c is ToolCall => c.type === "toolCall");
+};
+
 const toolCalls = (content: Message["content"]): string => {
-  if (!content || typeof content === "string") return "";
-  return content
-    .filter((c) => c.type === "toolCall")
+  return toolCallParts(content)
     .map((c) => `${c.name}(${summarizeToolArgs(c.arguments)})`)
     .join(", ");
 };
 
 const extractFilesFromContent = (content: Message["content"]): string[] => {
-  if (!content || typeof content === "string") return [];
-  return content
-    .filter((c) => c.type === "toolCall")
+  return toolCallParts(content)
     .map((c) => extractPath(c.arguments))
     .filter((p): p is string => p !== null);
 };

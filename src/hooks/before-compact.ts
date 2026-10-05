@@ -1,7 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { convertToLlm } from "@earendil-works/pi-coding-agent";
+import { convertToLlm, VERSION } from "@earendil-works/pi-coding-agent";
 import { writeFileSync } from "fs";
 import { compileRanked } from "../core/summarize";
+import { normalize } from "../core/normalize";
+import { buildGlobalIndexById, loadGlobalIndexById } from "../core/global-indices";
 import { parseKeepAndPrompt, PI_VCC_COMPACT_INSTRUCTION } from "../core/compact-args";
 import { loadSettings, type PiVccSettings } from "../core/settings";
 import { calibrateCharsPerToken, estimateMessageContentChars, estimateMessageContentTokens, estimateTokensFromChars } from "../core/token-estimate";
@@ -48,6 +50,45 @@ let pendingAutoContinueTimer: ReturnType<typeof setTimeout> | null = null;
 // Ported from monotykamary/pi-vcc branch 'tom'
 // (https://github.com/monotykamary/pi-vcc, MIT) — a pi-vcc derivative.
 export const AUTO_CONTINUE_CUSTOM_TYPE = "pi-vcc-auto-continue";
+
+/**
+ * First Pi version that resumes the run by itself after an automatic compaction.
+ * From this version on pi-vcc's fallback continue is redundant, and because it is
+ * scheduled blind (setTimeout(0), no idle check) it lands as a ghost turn once the
+ * self-resumed run ends - see issue #22, which reports both behaviours on 0.84.4.
+ * Kept as a [major, minor, patch] tuple so there is one source of truth.
+ */
+export const PI_SELF_RESUME_VERSION: readonly [number, number, number] = [0, 84, 4];
+
+/**
+ * Minimal semver core parse: [major, minor, patch], or null when unusable.
+ * Prerelease/build suffixes are dropped, so 0.84.4-rc.1 counts as 0.84.4 - the
+ * safe direction, since such a build already carries the self-resume behaviour.
+ */
+const parseVersionCore = (version: unknown): [number, number, number] | null => {
+  if (typeof version !== "string") return null;
+  const m = /^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version.trim());
+  if (!m) return null;
+  return [Number(m[1]), Number(m[2]), Number(m[3])];
+};
+
+/**
+ * Two keys must both turn for pi-vcc to send its own continue:
+ *  - `settingEnabled` is the user's permission (`continueAfterThresholdCompact`);
+ *    false always wins.
+ *  - the running Pi must be old enough to still need the fallback.
+ * An unreadable/malformed version fails safe to "no continue": a missing continue
+ * costs one idle turn, a ghost turn corrupts the transcript.
+ */
+export const shouldScheduleAutoContinue = (settingEnabled: boolean, piVersion: unknown): boolean => {
+  if (!settingEnabled) return false;
+  const running = parseVersionCore(piVersion);
+  if (!running) return false;
+  for (let i = 0; i < 3; i++) {
+    if (running[i] !== PI_SELF_RESUME_VERSION[i]) return running[i] < PI_SELF_RESUME_VERSION[i];
+  }
+  return false;
+};
 
 export const triggerInvisibleContinue = (pi: ExtensionAPI): void => {
   pi.sendMessage(
@@ -183,6 +224,29 @@ interface EntryWithMessage {
   message: { role: string; content: unknown };
 }
 
+/** convertToLlm for one message, as the summarizer input path runs it: a message
+ * it rejects or drops yields []. */
+const toLlmSafe = (message: unknown): any[] => {
+  try {
+    return convertToLlm([message as any]);
+  } catch {
+    return [];
+  }
+};
+
+/** A custom_message the user listed in skipCustomTypes; dropped before summarizing. */
+const isSkippedCustom = (m: any, skipCustomTypes: readonly string[]): boolean =>
+  m?.role === "custom" && skipCustomTypes.includes(m?.customType);
+
+/** True when the prefix would contribute at least one block to the summary.
+ * Runs the same path as the summarizer (skipCustomTypes filter, convertToLlm,
+ * normalize): custom_message and branch_summary become user content and render,
+ * while role "system" passes through unchanged and renders nothing. */
+const prefixHasRenderableContent = (prefix: EntryWithMessage[], skipCustomTypes: readonly string[]): boolean =>
+  normalize(
+    prefix.filter((m) => !isSkippedCustom(m.message, skipCustomTypes)).flatMap((m) => toLlmSafe(m.message)),
+  ).length > 0;
+
 // Convert a non-message entry that carries LLM-context text (custom_message /
 // branch_summary) into its agent-message form, mirroring pi-core's
 // createCustomMessage / createBranchSummaryMessage (not root-exported, so inlined).
@@ -218,6 +282,8 @@ export type OwnCutResult =
   | {
       ok: true;
       messages: any[];
+      /** Entry ids parallel to `messages` — used to resolve global `#N` refs. */
+      selectedIds: string[];
       firstKeptEntryId: string;
       compactAll: boolean;
       keptUserTurns: number;
@@ -269,12 +335,20 @@ const collectLiveMessages = (branchEntries: any[]): EntryWithMessage[] => {
   return liveMessages;
 };
 
-export function buildOwnCut(branchEntries: any[], keepUserTurns = 1): OwnCutResult {
+export function buildOwnCut(
+  branchEntries: any[],
+  keepUserTurns = 1,
+  skipCustomTypes: readonly string[] = [],
+): OwnCutResult {
   const normalizedKeepUserTurns = normalizeKeepUserTurns(keepUserTurns);
   const liveMessages = collectLiveMessages(branchEntries);
 
   if (liveMessages.length === 0) return { ok: false, reason: "no_live_messages" };
   if (liveMessages.length <= 2) return { ok: false, reason: "too_few_live_messages" };
+  // A window with nothing renderable compiles to "" whichever cut is chosen, so
+  // the hook would store an empty summary while keeping everything. Treat it as
+  // nothing to compact — include it in compactAll, declare it empty.
+  if (!prefixHasRenderableContent(liveMessages, skipCustomTypes)) return { ok: false, reason: "no_live_messages" };
 
   const userIndices = liveMessages.reduce<number[]>((acc, e, i) => {
     if (e.message.role === "user") acc.push(i);
@@ -283,6 +357,7 @@ export function buildOwnCut(branchEntries: any[], keepUserTurns = 1): OwnCutResu
   const compactAll = (keepFallbackToCompactAll: boolean) => ({
     ok: true as const,
     messages: liveMessages.map((e) => e.message),
+    selectedIds: liveMessages.map((e) => e.entry.id),
     firstKeptEntryId: "",
     compactAll: true,
     keptUserTurns: 0,
@@ -305,9 +380,20 @@ export function buildOwnCut(branchEntries: any[], keepUserTurns = 1): OwnCutResu
     return compactAll(true);
   }
 
+  // A prefix that renders no block would compile to "", storing an empty summary
+  // while keeping every message: context never shrinks and the next agent_end
+  // re-triggers compaction indefinitely. Pi 1.0 persists the prompt/tool loadout
+  // as a role:"system" entry (agent-session _preparePromptAndToolLoadout) that
+  // renders nothing, so when it alone precedes the first user message the prefix
+  // is empty; a custom_message listed in skipCustomTypes does the same. Fall back
+  // to compact-all, the same path already used when no safe boundary exists;
+  // applyTailBudget then decides the tail.
+  if (!prefixHasRenderableContent(liveMessages.slice(0, cutIdx), skipCustomTypes)) return compactAll(true);
+
   return {
     ok: true,
     messages: liveMessages.slice(0, cutIdx).map((e) => e.message),
+    selectedIds: liveMessages.slice(0, cutIdx).map((e) => e.entry.id),
     firstKeptEntryId: liveMessages[cutIdx].entry.id,
     compactAll: false,
     keptUserTurns: userIndices.length - targetUserIdx,
@@ -346,16 +432,22 @@ export const findBudgetCutIndex = (
 export const applyTailBudget = (
   branchEntries: any[],
   cut: OwnCutResult,
-  opts: { maxTokens?: number; oversizedFactor?: number; charsPerToken?: number } = {},
+  opts: { maxTokens?: number; oversizedFactor?: number; charsPerToken?: number; skipCustomTypes?: readonly string[] } = {},
 ): OwnCutResult => {
   if (!cut.ok) return cut;
   const maxTokens = opts.maxTokens ?? MAX_SMART_TAIL_TOKENS;
   const factor = opts.oversizedFactor ?? OVERSIZED_TAIL_FACTOR;
   const live = collectLiveMessages(branchEntries);
+  // Same guard as buildOwnCut, for the compact-all re-cut: a budget cut right
+  // after a lone system entry (first user message alone over budget) would
+  // summarize nothing. Case B never needs it: its cut extends a prefix that
+  // already renders.
+  const renders = (idx: number) => prefixHasRenderableContent(live.slice(0, idx), opts.skipCustomTypes ?? []);
 
   const budgetResult = (idx: number, budgetCut: BudgetCutKind): OwnCutResult => ({
     ok: true,
     messages: live.slice(0, idx).map((m) => m.message),
+    selectedIds: live.slice(0, idx).map((m) => m.entry.id),
     firstKeptEntryId: live[idx].entry.id,
     compactAll: false,
     keptUserTurns: live.slice(idx).filter((m) => m.message.role === "user").length,
@@ -370,7 +462,7 @@ export const applyTailBudget = (
   if (cut.compactAll) {
     if (!cut.keepFallbackToCompactAll) return cut;
     const idx = findBudgetCutIndex(live, maxTokens, opts.charsPerToken);
-    if (idx < 0) return cut;
+    if (idx < 0 || !renders(idx)) return cut;
     return budgetResult(idx, "no_anchor");
   }
 
@@ -477,7 +569,12 @@ const REASON_MESSAGES: Record<OwnCutCancelReason, string> = {
   too_few_live_messages: "pi-vcc: Too few messages to compact",
 };
 
-export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
+/**
+ * `piVersion` is the running Pi version (defaults to the runtime's own VERSION).
+ * It is a parameter, not a setting: it decides whether pi-vcc's auto-continue
+ * fallback is still needed, and lets tests pin the behaviour to a version.
+ */
+export const registerBeforeCompactHook = (pi: ExtensionAPI, piVersion: string = VERSION) => {
   // Filter our invisible-continue marker out of the LLM context payload so the
   // model just continues from the compaction summary (matched by customType ONLY).
   pi.on("context", (event) => {
@@ -502,6 +599,13 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     const { isPiVcc, keepUserTurns, keepUserTurnsExplicit, followUpPrompt } = parseCompactionInstructions(customInstructions);
     pendingFollowUpPrompt = null;
     if (!isPiVcc && !settings.overrideDefaultCompaction) return;
+    // Provider-level opt-out (#27): defer to the provider's own compaction
+    // (e.g. remote compaction via pi-codex-compaction). Checked at call time
+    // because the model can change mid-session via /model. Explicit /pi-vcc
+    // bypasses the skip; undefined model never skips.
+    const provider = (ctx as any)?.model?.provider;
+    if (!isPiVcc && typeof provider === "string" &&
+        settings.skipForProviders.some((p) => p.toLowerCase() === provider.toLowerCase())) return;
 
     const calibrationCut = buildOwnCut(branchEntries as any[], 0);
     const calibrationMessageChars = calibrationCut.ok
@@ -527,11 +631,14 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
       smartKeepTail: settings.smartKeepTail,
       charsPerToken: tokenEstimate.charsPerToken,
     });
-    let ownCut = buildOwnCut(branchEntries as any[], smartKeep.keepUserTurns);
+    let ownCut = buildOwnCut(branchEntries as any[], smartKeep.keepUserTurns, settings.skipCustomTypes);
     // Default path only: rescue autonomous / oversized-tail sessions with a
     // token-budget cut. Explicit keep:N is respected absolutely (no-op here).
     if (ownCut.ok && !keepUserTurnsExplicit) {
-      ownCut = applyTailBudget(branchEntries as any[], ownCut, { charsPerToken: tokenEstimate.charsPerToken });
+      ownCut = applyTailBudget(branchEntries as any[], ownCut, {
+        charsPerToken: tokenEstimate.charsPerToken,
+        skipCustomTypes: settings.skipCustomTypes,
+      });
     }
     if (!ownCut.ok) {
       const lastComp = [...branchEntries].reverse().find((e: any) => e.type === "compaction");
@@ -605,9 +712,59 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     }
 
     pendingFollowUpPrompt = followUpPrompt;
-    const agentMessages = ownCut.messages;
+    // Filter user-declared customTypes right before summarizer input
+    // (skipCustomTypes). Cut selection, token calibration, firstKeptEntryId
+    // and kept-user-turn counting are already fixed upstream — this only
+    // changes what the summarizer sees. The pair must stay aligned.
+    let agentMessages = ownCut.messages;
+    let agentSelectedIds = ownCut.selectedIds;
+    if (settings.skipCustomTypes.length > 0) {
+      const pairs = agentMessages
+        .map((m: any, i: number) => ({ m, id: agentSelectedIds[i] }))
+        .filter(({ m }: any) => !isSkippedCustom(m, settings.skipCustomTypes));
+      agentMessages = pairs.map((p: any) => p.m);
+      agentSelectedIds = pairs.map((p: any) => p.id);
+    }
     const firstKeptEntryId = ownCut.firstKeptEntryId;
-    const messages = convertToLlm(agentMessages);
+
+    // ── Session-global indices for summary refs (issue #28) ──────────
+    // Recall numbers messages across the whole session file (all windows,
+    // all branches); the selected window is zero-based. Map each selected
+    // entry id to its global index so emitted (#N) refs resolve via recall.
+    // Primary source is the in-memory tree (file order, synchronously
+    // persisted); the session file is the streaming fallback.
+    let globalIndexById: Map<string, number> | undefined;
+    try {
+      const all = (ctx as any)?.sessionManager?.getEntries?.();
+      if (Array.isArray(all)) globalIndexById = buildGlobalIndexById(all);
+    } catch {
+      globalIndexById = undefined;
+    }
+    if (!globalIndexById) {
+      try {
+        const sf = (ctx as any)?.sessionManager?.getSessionFile?.();
+        if (typeof sf === "string" && sf) globalIndexById = loadGlobalIndexById(sf);
+      } catch {
+        globalIndexById = undefined;
+      }
+    }
+
+    // convertToLlm is elementwise (drops/replaces per message, order
+    // preserved), so align ids by converting singletons — never by position.
+    const convertedWithIndices: Array<{ message: any; sourceIndex: number | undefined }> = [];
+    for (let i = 0; i < agentMessages.length; i++) {
+      const converted = toLlmSafe(agentMessages[i]);
+      if (converted.length === 0) continue;
+      convertedWithIndices.push({
+        message: converted[0],
+        sourceIndex: globalIndexById?.get(agentSelectedIds[i]),
+      });
+    }
+    const messages = convertedWithIndices.map((x) => x.message);
+    // Fail-closed: when no index map exists at all every slot is undefined,
+    // so refs are omitted rather than emitted window-relative (the bug being
+    // fixed). Parallel to `messages` by construction.
+    const sourceIndices = convertedWithIndices.map((x) => x.sourceIndex);
 
     // Count kept messages and estimate tokens
     const keptIdx = (branchEntries as any[]).findIndex((e: any) => e.id === firstKeptEntryId);
@@ -657,11 +814,13 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
     const RANKED_BRIEF_TOKENS_PER_BLOCK = 15;
     const summary = compileRanked({
       messages,
+      sourceIndices,
       previousSummary: preparation.previousSummary,
       fileOps: {
         readFiles: [...preparation.fileOps.read],
         modifiedFiles: [...preparation.fileOps.written, ...preparation.fileOps.edited],
       },
+      trackCommands: settings.trackCommands,
       ranking: {
         maxBriefChars: Math.round(RANKED_BRIEF_BUDGET_TOKENS * tokenEstimate.charsPerToken),
         maxBriefCharsCeiling: Math.round(RANKED_BRIEF_CEILING_TOKENS * tokenEstimate.charsPerToken),
@@ -699,7 +858,9 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
 
     const details: PiVccCompactionDetails = {
       compactor: "pi-vcc",
-      version: 1,
+      // version 2 = refs are session-global (recall index space); version 1
+      // summaries carried window-relative refs (issue #28).
+      version: 2,
       sections: [...summary.matchAll(/^\[(.+?)\]/gm)].map((m) => m[1]),
       sourceMessageCount: agentMessages.length,
       previousSummaryUsed: Boolean(preparation.previousSummary),
@@ -724,13 +885,19 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI) => {
   pi.on("session_compact", async (event, ctx) => {
     const { reason, willRetry } = readCompactionEventContext(event);
     if (!event.fromExtension) return;
+    // The runner keeps the LAST non-null session_before_compact result, so
+    // another compaction extension can win even when pi-vcc also returned one.
+    // Read the truth from the persisted entry instead of lifecycle state:
+    // pi-vcc stamps details.compactor = "pi-vcc" on its own compactions.
+    if ((event as any).compactionEntry?.details?.compactor !== "pi-vcc") return;
     const followUpPrompt = pendingFollowUpPrompt;
     pendingFollowUpPrompt = null;
     if (lastCompactWasPiVcc) return; // /pi-vcc handles its own toast via onComplete
     if (willRetry) return;
     const stats = lastStats;
     if (!stats) return;
-    const shouldContinueAfterAutoCompact = (reason === "threshold" || reason === "overflow") && loadSettings().continueAfterThresholdCompact;
+    const shouldContinueAfterAutoCompact = (reason === "threshold" || reason === "overflow")
+      && shouldScheduleAutoContinue(loadSettings().continueAfterThresholdCompact, piVersion);
     scheduleCompactionStatsNotify(ctx, stats);
     if (followUpPrompt) {
       try {
