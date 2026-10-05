@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { convertToLlm, VERSION } from "@earendil-works/pi-coding-agent";
 import { writeFileSync } from "fs";
 import { compileRanked } from "../core/summarize";
+import { normalize } from "../core/normalize";
 import { buildGlobalIndexById, loadGlobalIndexById } from "../core/global-indices";
 import { parseKeepAndPrompt, PI_VCC_COMPACT_INSTRUCTION } from "../core/compact-args";
 import { loadSettings, type PiVccSettings } from "../core/settings";
@@ -223,19 +224,32 @@ interface EntryWithMessage {
   message: { role: string; content: unknown };
 }
 
-/** Roles `normalizeOne` (src/core/normalize.ts) turns into blocks. An entry with
- * any other role renders to nothing, so a summarized prefix containing only such
- * entries compiles to "". */
-const RENDERABLE_ROLES = new Set(["user", "assistant", "toolResult", "bashExecution"]);
+/** convertToLlm for one message, as the summarizer input path runs it: a message
+ * it rejects or drops yields []. */
+const toLlmSafe = (message: unknown): any[] => {
+  try {
+    return convertToLlm([message as any]);
+  } catch {
+    return [];
+  }
+};
 
-/** True when the prefix would contribute at least one block to the summary. */
-const prefixHasRenderableContent = (prefix: EntryWithMessage[]): boolean =>
-  prefix.some((m) => RENDERABLE_ROLES.has(m.message.role));
+/** A custom_message the user listed in skipCustomTypes; dropped before summarizing. */
+const isSkippedCustom = (m: any, skipCustomTypes: readonly string[]): boolean =>
+  m?.role === "custom" && skipCustomTypes.includes(m?.customType);
+
+/** True when the prefix would contribute at least one block to the summary.
+ * Runs the same path as the summarizer (skipCustomTypes filter, convertToLlm,
+ * normalize): custom_message and branch_summary become user content and render,
+ * while role "system" passes through unchanged and renders nothing. */
+const prefixHasRenderableContent = (prefix: EntryWithMessage[], skipCustomTypes: readonly string[]): boolean =>
+  normalize(
+    prefix.filter((m) => !isSkippedCustom(m.message, skipCustomTypes)).flatMap((m) => toLlmSafe(m.message)),
+  ).length > 0;
 
 // Convert a non-message entry that carries LLM-context text (custom_message /
 // branch_summary) into its agent-message form, mirroring pi-core's
 // createCustomMessage / createBranchSummaryMessage (not root-exported, so inlined).
-
 const toLiveMessage = (entry: any): { role: string; content: unknown; [key: string]: unknown } | null => {
   if (entry.type === "message" && entry.message) return entry.message;
   if (entry.type === "custom_message") {
@@ -321,7 +335,11 @@ const collectLiveMessages = (branchEntries: any[]): EntryWithMessage[] => {
   return liveMessages;
 };
 
-export function buildOwnCut(branchEntries: any[], keepUserTurns = 1): OwnCutResult {
+export function buildOwnCut(
+  branchEntries: any[],
+  keepUserTurns = 1,
+  skipCustomTypes: readonly string[] = [],
+): OwnCutResult {
   const normalizedKeepUserTurns = normalizeKeepUserTurns(keepUserTurns);
   const liveMessages = collectLiveMessages(branchEntries);
 
@@ -330,7 +348,7 @@ export function buildOwnCut(branchEntries: any[], keepUserTurns = 1): OwnCutResu
   // A window with nothing renderable compiles to "" whichever cut is chosen, so
   // the hook would store an empty summary while keeping everything. Treat it as
   // nothing to compact — include it in compactAll, declare it empty.
-  if (!prefixHasRenderableContent(liveMessages)) return { ok: false, reason: "no_live_messages" };
+  if (!prefixHasRenderableContent(liveMessages, skipCustomTypes)) return { ok: false, reason: "no_live_messages" };
 
   const userIndices = liveMessages.reduce<number[]>((acc, e, i) => {
     if (e.message.role === "user") acc.push(i);
@@ -364,15 +382,13 @@ export function buildOwnCut(branchEntries: any[], keepUserTurns = 1): OwnCutResu
 
   // A prefix that renders no block would compile to "", storing an empty summary
   // while keeping every message: context never shrinks and the next agent_end
-  // re-triggers compaction indefinitely. normalizeOne has no branch for
-  // role:"system" (Pi 1.0's prompt/tool-loadout entry, agent-session
-  // _preparePromptAndToolLoadout), "custom" (custom_message) or "branchSummary",
-  // so when one of those precedes the first user message the prefix is exactly
-  // that entry. Observed on 50 sessions before this guard, 46 of them via a
-  // leading system entry and 4 via a lone custom message. Fall back to compact-all, the same path
-  // already used when no safe boundary exists; applyTailBudget then decides the
-  // tail.
-  if (!prefixHasRenderableContent(liveMessages.slice(0, cutIdx))) return compactAll(true);
+  // re-triggers compaction indefinitely. Pi 1.0 persists the prompt/tool loadout
+  // as a role:"system" entry (agent-session _preparePromptAndToolLoadout) that
+  // renders nothing, so when it alone precedes the first user message the prefix
+  // is empty; a custom_message listed in skipCustomTypes does the same. Fall back
+  // to compact-all, the same path already used when no safe boundary exists;
+  // applyTailBudget then decides the tail.
+  if (!prefixHasRenderableContent(liveMessages.slice(0, cutIdx), skipCustomTypes)) return compactAll(true);
 
   return {
     ok: true,
@@ -416,12 +432,17 @@ export const findBudgetCutIndex = (
 export const applyTailBudget = (
   branchEntries: any[],
   cut: OwnCutResult,
-  opts: { maxTokens?: number; oversizedFactor?: number; charsPerToken?: number } = {},
+  opts: { maxTokens?: number; oversizedFactor?: number; charsPerToken?: number; skipCustomTypes?: readonly string[] } = {},
 ): OwnCutResult => {
   if (!cut.ok) return cut;
   const maxTokens = opts.maxTokens ?? MAX_SMART_TAIL_TOKENS;
   const factor = opts.oversizedFactor ?? OVERSIZED_TAIL_FACTOR;
   const live = collectLiveMessages(branchEntries);
+  // Same guard as buildOwnCut, for the compact-all re-cut: a budget cut right
+  // after a lone system entry (first user message alone over budget) would
+  // summarize nothing. Case B never needs it: its cut extends a prefix that
+  // already renders.
+  const renders = (idx: number) => prefixHasRenderableContent(live.slice(0, idx), opts.skipCustomTypes ?? []);
 
   const budgetResult = (idx: number, budgetCut: BudgetCutKind): OwnCutResult => ({
     ok: true,
@@ -441,7 +462,7 @@ export const applyTailBudget = (
   if (cut.compactAll) {
     if (!cut.keepFallbackToCompactAll) return cut;
     const idx = findBudgetCutIndex(live, maxTokens, opts.charsPerToken);
-    if (idx < 0) return cut;
+    if (idx < 0 || !renders(idx)) return cut;
     return budgetResult(idx, "no_anchor");
   }
 
@@ -610,11 +631,14 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI, piVersion: string = 
       smartKeepTail: settings.smartKeepTail,
       charsPerToken: tokenEstimate.charsPerToken,
     });
-    let ownCut = buildOwnCut(branchEntries as any[], smartKeep.keepUserTurns);
+    let ownCut = buildOwnCut(branchEntries as any[], smartKeep.keepUserTurns, settings.skipCustomTypes);
     // Default path only: rescue autonomous / oversized-tail sessions with a
     // token-budget cut. Explicit keep:N is respected absolutely (no-op here).
     if (ownCut.ok && !keepUserTurnsExplicit) {
-      ownCut = applyTailBudget(branchEntries as any[], ownCut, { charsPerToken: tokenEstimate.charsPerToken });
+      ownCut = applyTailBudget(branchEntries as any[], ownCut, {
+        charsPerToken: tokenEstimate.charsPerToken,
+        skipCustomTypes: settings.skipCustomTypes,
+      });
     }
     if (!ownCut.ok) {
       const lastComp = [...branchEntries].reverse().find((e: any) => e.type === "compaction");
@@ -697,7 +721,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI, piVersion: string = 
     if (settings.skipCustomTypes.length > 0) {
       const pairs = agentMessages
         .map((m: any, i: number) => ({ m, id: agentSelectedIds[i] }))
-        .filter(({ m }: any) => !(m?.role === "custom" && settings.skipCustomTypes.includes(m?.customType)));
+        .filter(({ m }: any) => !isSkippedCustom(m, settings.skipCustomTypes));
       agentMessages = pairs.map((p: any) => p.m);
       agentSelectedIds = pairs.map((p: any) => p.id);
     }
@@ -729,12 +753,7 @@ export const registerBeforeCompactHook = (pi: ExtensionAPI, piVersion: string = 
     // preserved), so align ids by converting singletons — never by position.
     const convertedWithIndices: Array<{ message: any; sourceIndex: number | undefined }> = [];
     for (let i = 0; i < agentMessages.length; i++) {
-      let converted: any[];
-      try {
-        converted = convertToLlm([agentMessages[i]]);
-      } catch {
-        continue;
-      }
+      const converted = toLlmSafe(agentMessages[i]);
       if (converted.length === 0) continue;
       convertedWithIndices.push({
         message: converted[0],
