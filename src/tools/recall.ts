@@ -1,6 +1,6 @@
 import { Type } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { parseToolRequest } from "../core/recall-request";
+import { normalizeToolParams, parseToolRequest } from "../core/recall-request";
 import { invalidExpandIndices, openRecallView, runRecall, type RecallPagingHints } from "../core/recall-run";
 
 export { invalidExpandIndices };
@@ -71,6 +71,8 @@ export const registerRecallTool = (pi: ExtensionAPI) => {
         ], { description: "hybrid (default) = normal recall; touched = files worked on, by path, with entry indices. The touched list misses files written via apply_patch (paths inside the diff) or bash redirects." }),
       ),
     }),
+    // Runs before pi validates the schema, so repairable mistakes never reach the agent as errors.
+    prepareArguments: (args: unknown) => normalizeToolParams(args) as any,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const sessionFile = ctx.sessionManager.getSessionFile();
       if (!sessionFile) {

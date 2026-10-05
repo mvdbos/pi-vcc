@@ -80,9 +80,10 @@ const IGNORED_REASON: Record<RecallRequest["action"]["kind"], string> = {
 
 /** One line naming params the action did not use, so nothing is dropped silently. */
 export const ignoredNote = (request: RecallRequest): string =>
-  request.ignored?.length
+  (request.dropped?.length ? `Ignored: ${request.dropped.join(", ")}.\n\n` : "") +
+  (request.ignored?.length
     ? `Ignored: ${request.ignored.join(", ")} (${IGNORED_REASON[request.action.kind]}).\n\n`
-    : "";
+    : "");
 
 export const runRecall = (request: RecallRequest, view: RecallView, hints: RecallPagingHints): string =>
   ignoredNote(request) + runAction(request, view, hints);
