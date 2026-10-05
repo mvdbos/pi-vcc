@@ -223,9 +223,19 @@ interface EntryWithMessage {
   message: { role: string; content: unknown };
 }
 
+/** Roles `normalizeOne` (src/core/normalize.ts) turns into blocks. An entry with
+ * any other role renders to nothing, so a summarized prefix containing only such
+ * entries compiles to "". */
+const RENDERABLE_ROLES = new Set(["user", "assistant", "toolResult", "bashExecution"]);
+
+/** True when the prefix would contribute at least one block to the summary. */
+const prefixHasRenderableContent = (prefix: EntryWithMessage[]): boolean =>
+  prefix.some((m) => RENDERABLE_ROLES.has(m.message.role));
+
 // Convert a non-message entry that carries LLM-context text (custom_message /
 // branch_summary) into its agent-message form, mirroring pi-core's
 // createCustomMessage / createBranchSummaryMessage (not root-exported, so inlined).
+
 const toLiveMessage = (entry: any): { role: string; content: unknown; [key: string]: unknown } | null => {
   if (entry.type === "message" && entry.message) return entry.message;
   if (entry.type === "custom_message") {
@@ -317,6 +327,10 @@ export function buildOwnCut(branchEntries: any[], keepUserTurns = 1): OwnCutResu
 
   if (liveMessages.length === 0) return { ok: false, reason: "no_live_messages" };
   if (liveMessages.length <= 2) return { ok: false, reason: "too_few_live_messages" };
+  // A window with nothing renderable compiles to "" whichever cut is chosen, so
+  // the hook would store an empty summary while keeping everything. Treat it as
+  // nothing to compact — include it in compactAll, declare it empty.
+  if (!prefixHasRenderableContent(liveMessages)) return { ok: false, reason: "no_live_messages" };
 
   const userIndices = liveMessages.reduce<number[]>((acc, e, i) => {
     if (e.message.role === "user") acc.push(i);
@@ -347,6 +361,18 @@ export function buildOwnCut(branchEntries: any[], keepUserTurns = 1): OwnCutResu
     // (so 0 kept from pre-compaction), and next buildOwnCut triggers orphan recovery.
     return compactAll(true);
   }
+
+  // A prefix that renders no block would compile to "", storing an empty summary
+  // while keeping every message: context never shrinks and the next agent_end
+  // re-triggers compaction indefinitely. normalizeOne has no branch for
+  // role:"system" (Pi 1.0's prompt/tool-loadout entry, agent-session
+  // _preparePromptAndToolLoadout), "custom" (custom_message) or "branchSummary",
+  // so when one of those precedes the first user message the prefix is exactly
+  // that entry. Observed on 50 sessions before this guard, 46 of them via a
+  // leading system entry and 4 via a lone custom message. Fall back to compact-all, the same path
+  // already used when no safe boundary exists; applyTailBudget then decides the
+  // tail.
+  if (!prefixHasRenderableContent(liveMessages.slice(0, cutIdx))) return compactAll(true);
 
   return {
     ok: true,
