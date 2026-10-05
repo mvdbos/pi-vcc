@@ -186,6 +186,8 @@ describe("vcc_recall next-step hints", () => {
       msg("u0", "user", "fix the redis cache"),
       msg("a1", "assistant", [{ type: "toolCall", id: "w1", name: "write", arguments: { path: "/repo/src/cache.ts", content: "x" } }]),
       msg("r2", "toolResult", [{ type: "text", text: "ok" }], { toolCallId: "w1", toolName: "write" }),
+      msg("u3", "user", "what did we do earlier?"),
+      msg("a4", "assistant", [{ type: "toolCall", id: "q1", name: "vcc_recall", arguments: {} }]),
     ];
     const file = writeSession(entries);
     const ids = entries.map((e) => e.id);
@@ -195,5 +197,76 @@ describe("vcc_recall next-step hints", () => {
 
     const touched = await recall(file, { mode: "touched" }, ids);
     expect(touched).toContain("--- File content at an entry: query:'#1:cache.ts' ---");
+  });
+});
+
+// Live test P5: the agent searched with words from the question itself, the
+// question matched, and the fact on an abandoned branch was never reached.
+describe("vcc_recall search skips the current turn", () => {
+  const entries = [
+    msg("u0", "user", "fix the bucket"),
+    msg("a1", "assistant", "fixed"),
+    msg("u2", "user", "remember: staging code is TEAL-ORCHID-42"),
+    msg("a3", "assistant", "noted the staging code"),
+    msg("u4", "user", "add a README line"),
+    msg("a5", "assistant", "done"),
+    msg("u6", "user", "what was the staging code I gave you?"),
+    // the agent message making this recall call, written before the tool runs
+    msg("a7", "assistant", [{ type: "toolCall", id: "r1", name: "vcc_recall", arguments: { query: "staging code" } }]),
+  ];
+  const live = ["u0", "a1", "u4", "a5", "u6", "a7"];
+
+  it("does not answer a question with itself, and falls back to the abandoned branch", async () => {
+    const file = writeSession(entries);
+    const out = await recall(file, { query: "staging code" }, live);
+    expect(out.startsWith("Nothing on the current conversation path")).toBe(true);
+    expect(out).toContain("TEAL-ORCHID-42");
+    expect(out).not.toContain("what was the staging code");
+  });
+
+  it("keeps earlier turns, and range/expand still reach the current turn", async () => {
+    const file = writeSession(entries);
+    const earlier = await recall(file, { query: "README" }, live);
+    expect(earlier).toContain("#4 [user] add a README line");
+    expect(await recall(file, { expand: [6] }, live)).toContain("#6 [user] what was the staging code");
+    expect(await recall(file, { range: [6, 6] }, live)).toContain("#6 [user]");
+  });
+
+  it("takes the turn from the active path even with scope:'all'", async () => {
+    // u2/a3 are an abandoned branch whose question is the session's last user message
+    const branched = [entries[0], entries[1], msg("q2", "user", "which staging code?"), entries[6], entries[7], msg("z9", "user", "staging code on the old branch")];
+    const file = writeSession(branched);
+    const out = await recall(file, { query: "staging code", scope: "all" }, ["u0", "a1", "q2", "u6", "a7"]);
+    expect(out).toContain("#2 [user] which staging code?");
+    expect(out).toContain("#5 [user] staging code on the old branch");
+    expect(out).not.toContain("what was the staging code");
+  });
+
+  it("skips nothing once the context was compacted inside the turn", async () => {
+    const file = writeSession(entries);
+    let tool: any;
+    registerRecallTool({ registerTool: (t: any) => { tool = t; } } as any);
+    const branch = [
+      ...["u0", "a1", "u4", "a5"].map((id) => ({ id })),
+      { id: "u6", type: "message", message: { role: "user" } },
+      { id: "c1", type: "compaction" },
+      { id: "a7", type: "message", message: { role: "assistant" } },
+    ];
+    const r = await tool.execute("call", { query: "staging code" }, undefined, undefined, {
+      sessionManager: { getSessionFile: () => file, getBranch: () => branch, getEntries: () => branch },
+    });
+    expect(r.content[0].text).toContain("#6 [user] what was the staging code");
+  });
+
+  it("says so when every match is in the current turn", async () => {
+    const file = writeSession(entries);
+    const out = await recall(file, { query: "what was" }, live);
+    expect(out).toBe('No earlier matches for "what was"; its 1 match is in the current turn, which is already in your context.');
+  });
+
+  it("skips nothing when no agent message follows the last user message", async () => {
+    const file = writeSession(entries.slice(0, 7));
+    const out = await recall(file, { query: "staging code" }, live.slice(0, 5));
+    expect(out).toContain("#6 [user] what was the staging code");
   });
 });

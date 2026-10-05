@@ -21,6 +21,12 @@ export interface RecallView {
   load(full: boolean): LoadedMessages;
   /** The same session with scope:'all' (itself when already 'all'). */
   widen(): RecallView;
+  /**
+   * #N of the turn in progress on the active path (its last user message and
+   * everything after it), all in the agent's context. Empty when there is no
+   * turn in progress or the context was compacted inside it.
+   */
+  currentTurn(): Set<number>;
 }
 
 export const openRecallView = (
@@ -31,6 +37,7 @@ export const openRecallView = (
   const lineageEntryIds = scope === "lineage" ? getActiveLineageEntryIds(sessionManager) : undefined;
   const cache = new Map<boolean, LoadedMessages>();
   let wide: RecallView | undefined;
+  let turn: Set<number> | undefined;
   const view: RecallView = {
     sessionFile,
     scope,
@@ -46,8 +53,34 @@ export const openRecallView = (
       if (scope === "all") return view;
       return (wide ??= openRecallView(sessionFile, "all", sessionManager));
     },
+    currentTurn() {
+      return (turn ??= findCurrentTurn(sessionFile, sessionManager));
+    },
   };
   return view;
+};
+
+/**
+ * Walk the active path back to the last user message. The tool runs from an
+ * agent message pi has already written, so a turn is in progress only when
+ * something follows that user message; a compaction in between means the
+ * start of the turn may have left the context.
+ */
+const findCurrentTurn = (sessionFile: string, sessionManager: LineageSessionManagerLike): Set<number> => {
+  const none = new Set<number>();
+  let branch: any[] = [];
+  try { branch = sessionManager.getBranch() ?? []; } catch { return none; }
+  for (let i = branch.length - 1; i >= 0; i--) {
+    const e = branch[i];
+    if (e?.type === "compaction") return none;
+    if (e?.type === "message" && e.message?.role === "user") break;
+  }
+  const { rendered } = loadAllMessages(sessionFile, false, getActiveLineageEntryIds(sessionManager));
+  for (let i = rendered.length - 1; i >= 0; i--) {
+    if (rendered[i].role !== "user") continue;
+    return i < rendered.length - 1 ? new Set(rendered.slice(i).map((m) => m.index)) : none;
+  }
+  return none;
 };
 
 /**
@@ -67,7 +100,15 @@ export interface RecallPagingHints {
   nextPage(query: string, scope: RecallScope, page: number): string;
   /** Next step after a search page, pointing at its first hit. The command has none. */
   aroundHit?(index: number, scope: RecallScope): string;
+  /**
+   * Leave the current turn (last user message on the path and everything after
+   * it) out of search: the agent has it in context, and its question would
+   * otherwise match itself. Only the tool sets this; a /pi-vcc-recall command
+   * adds no user message, so the last one there belongs to a finished turn.
+   */
+  skipCurrentTurn?: boolean;
 }
+
 
 const IGNORED_REASON: Record<RecallRequest["action"]["kind"], string> = {
   drill: "a #N:path query runs alone",
@@ -112,7 +153,7 @@ const runAction = (request: RecallRequest, view: RecallView, hints: RecallPaging
       return runRange(action.range, action.page, view);
 
     case "search":
-      return runSearch(action.query, action.page, view, hints);
+      return runSearch(action.query, action.page, view, hints, hints.skipCurrentTurn ? view.currentTurn() : undefined);
 
     case "recent": {
       const { rendered } = view.load(false);
@@ -226,14 +267,28 @@ const runRange = (range: unknown[], page: number, view: RecallView): string => {
   return formatRecallOutput(entries.slice(start, start + RANGE_PAGE_SIZE), undefined, header) + footer;
 };
 
-const runSearch = (query: string, page: number, view: RecallView, hints: RecallPagingHints): string => {
+const searchBefore = (view: RecallView, query: string, skip: Set<number> | undefined) => {
   const { rendered, rawMessages } = view.load(false);
-  const { hits, totalBeforeCap, truncated } = searchEntriesDetailed(rendered, rawMessages, query);
+  const result = searchEntriesDetailed(rendered, rawMessages, query);
+  if (!skip?.size) return result;
+  // Filter after ranking so scores, and the order of everything kept, stay as they were.
+  const hits = result.hits.filter((h) => !skip.has(h.index));
+  return { ...result, hits, totalBeforeCap: result.totalBeforeCap - (result.hits.length - hits.length) };
+};
+
+const runSearch = (query: string, page: number, view: RecallView, hints: RecallPagingHints, skip?: Set<number>): string => {
+  const { hits, totalBeforeCap, truncated } = searchBefore(view, query, skip);
   if (hits.length === 0 && view.scope === "lineage") {
     const wide = view.widen();
-    const w = wide.load(false);
-    if (searchEntriesDetailed(w.rendered, w.rawMessages, query).hits.length > 0) {
-      return OFF_PATH_NOTE + runSearch(query, page, wide, hints);
+    if (searchBefore(wide, query, skip).hits.length > 0) {
+      return OFF_PATH_NOTE + runSearch(query, page, wide, hints, skip);
+    }
+  }
+  if (hits.length === 0 && skip?.size) {
+    const inTurn = searchEntriesDetailed(view.load(false).rendered, view.load(false).rawMessages, query).hits
+      .filter((h) => skip.has(h.index)).length;
+    if (inTurn > 0) {
+      return `No earlier matches for "${query}"; its ${inTurn} match${inTurn === 1 ? " is" : "es are"} in the current turn, which is already in your context.`;
     }
   }
   // Single source of truth for page count: hits.length, the same array
