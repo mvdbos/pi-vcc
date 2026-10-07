@@ -110,8 +110,8 @@ const startBudget = (): (() => void) => {
   return () => {
     if (Date.now() > deadline) {
       throw new Error(
-        `Search aborted: query exceeded ${SEARCH_BUDGET_MS}ms. Simplify the pattern — ` +
-        "nested quantifiers such as (a+)+ can make matching blow up.",
+        `Search aborted: query exceeded ${SEARCH_BUDGET_MS}ms. Use fewer or more specific words; ` +
+        "for a regex, avoid nested quantifiers such as (a+)+.",
       );
     }
   };
@@ -149,60 +149,75 @@ const filterStopwords = (terms: string[]): string[] => {
   return meaningful.length > 0 ? meaningful : terms;
 };
 
-/** Count how many distinct terms match the haystack. */
-const countMatches = (hay: string, terms: string[]): number => {
-  let count = 0;
-  for (const t of terms) {
-    if (safeRegex(t).test(hay)) count++;
-  }
-  return count;
-};
-
 // ── BM25-lite scoring ──
 const BM25_K = 1.2;
 const BM25_B = 0.75;
 
-/** Count occurrences of a regex pattern in text. */
-const termFreq = (text: string, pattern: RegExp): number => {
-  const matches = text.match(new RegExp(pattern.source, "gi"));
+/**
+ * One query term, compiled once per search. Building the RegExp per term per
+ * doc cost ~1M compilations on a 17k-message session and was most of the
+ * search time.
+ */
+interface Term {
+  term: string;
+  re: RegExp;      // safeRegex(term): case-insensitive, first match
+  global: RegExp;  // same source with "gi", for counting occurrences
+}
+
+const compileTerms = (terms: string[]): Term[] =>
+  terms.map((term) => {
+    const re = safeRegex(term);
+    return { term, re, global: new RegExp(re.source, "gi") };
+  });
+
+/** Count occurrences of a term in text. */
+const termFreq = (text: string, t: Term): number => {
+  const matches = text.match(t.global);
   return matches ? matches.length : 0;
 };
+
+const wordCount = (doc: string): number => doc.split(/\s+/).length;
 
 interface BM25Context {
   n: number;         // total docs
   avgDl: number;     // average doc length (words)
   df: Map<string, number>; // term -> number of docs containing it
+  /** Per doc, the terms it contains: found once here, reused for matchCount and scoring. */
+  matched: Term[][];
 }
 
 /** Precompute IDF and avgDl across all docs. */
-const buildBM25Context = (docs: string[], terms: string[], checkBudget: () => void): BM25Context => {
+const buildBM25Context = (docs: string[], docLens: number[], terms: Term[], checkBudget: () => void): BM25Context => {
   const n = docs.length;
   const df = new Map<string, number>();
+  const matched: Term[][] = [];
   let totalLen = 0;
 
-  for (const doc of docs) {
+  for (let i = 0; i < n; i++) {
     checkBudget();
-    totalLen += doc.split(/\s+/).length;
+    totalLen += docLens[i];
+    const here: Term[] = [];
     for (const t of terms) {
-      if (safeRegex(t).test(doc)) {
-        df.set(t, (df.get(t) ?? 0) + 1);
+      if (t.re.test(docs[i])) {
+        df.set(t.term, (df.get(t.term) ?? 0) + 1);
+        here.push(t);
       }
     }
+    matched.push(here);
   }
 
-  return { n, avgDl: totalLen / Math.max(n, 1), df };
+  return { n, avgDl: totalLen / Math.max(n, 1), df, matched };
 };
 
 /** BM25 score for a single doc against query terms. */
-const bm25Score = (doc: string, terms: string[], ctx: BM25Context): number => {
-  const dl = doc.split(/\s+/).length;
+const bm25Score = (doc: string, dl: number, terms: Term[], ctx: BM25Context): number => {
   let score = 0;
 
   for (const t of terms) {
-    const tf = termFreq(doc, safeRegex(t));
+    const tf = termFreq(doc, t);
     if (tf === 0) continue;
 
-    const docFreq = ctx.df.get(t) ?? 0;
+    const docFreq = ctx.df.get(t.term) ?? 0;
     // IDF: log((N - df + 0.5) / (df + 0.5) + 1)
     const idf = Math.log((ctx.n - docFreq + 0.5) / (docFreq + 0.5) + 1);
     // TF saturation with length normalization
@@ -535,16 +550,20 @@ export const searchEntriesDetailed = (
     docs.push(`${e.role} ${text} ${filePart}`);
   }
 
-  const ctx = buildBM25Context(docs, terms, checkBudget);
+  const compiled = compileTerms(terms);
+  const docLens = docs.map(wordCount);
+  const ctx = buildBM25Context(docs, docLens, compiled, checkBudget);
 
   const scored: Array<{ hit: SearchHit; score: number }> = [];
   for (let i = 0; i < entries.length; i++) {
     checkBudget();
     const e = entries[i];
     const hay = docs[i];
-    const mc = countMatches(hay, terms);
+    const here = ctx.matched[i];
+    const mc = here.length;
     if (mc === 0) continue;
-    const score = bm25Score(hay, terms, ctx);
+    // Terms absent from the doc add 0, so scoring only the matched ones gives the same sum in the same order.
+    const score = bm25Score(hay, docLens[i], here, ctx);
     const text = messages[i] ? fullText(messages[i]) : e.summary;
     const snip = lineSnippet(text, snipRe);
     scored.push({
