@@ -4,6 +4,8 @@ All notable changes to `@sting8k/pi-vcc` are documented in this file.
 
 ## [Unreleased]
 
+## [0.10.0]
+
 ### Features
 
 - **`vcc_recall` reads a range** — `range: [from, to]` returns entries `#from..#to` in order, 20 per page, so the agent can read what happened around a summary ref like `(#1253)` without guessing search terms or expanding each entry in full. Idea and first version by @Renno231 (#20).
