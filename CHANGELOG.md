@@ -4,6 +4,28 @@ All notable changes to `@sting8k/pi-vcc` are documented in this file.
 
 ## [Unreleased]
 
+### Features
+
+- **`vcc_recall` reads a range** — `range: [from, to]` returns entries `#from..#to` in order, 20 per page, so the agent can read what happened around a summary ref like `(#1253)` without guessing search terms or expanding each entry in full. Idea and first version by @Renno231 (#20).
+- **`expand` of a tool call includes its result** — the result is matched by tool call id and clipped at 4,000 chars, with the `expand` that reads all of it.
+- **Off-path fallback** — when the current conversation path has nothing for a query, range, expand or `#N:path`, recall answers from edited or retried branches and says so on the first line. Before, it answered "No matches" or "Cannot expand" unless the agent knew to retry with `scope: "all"`.
+- **Next-step lines** — search results end with a ready `range`/`expand` around the first hit, and `mode: "touched"` with a ready `#N:path` call. A range past the end is read up to the last entry.
+- **Forgiving arguments** — mistakes with only one possible meaning are repaired before pi validates the call: `"459"` or `"#459"` for a number, a single index for `expand` or `range`, `"10-20"` or a reversed range, `"ALL"`, and `mode: "all"` meant as `scope: "all"` (which pi used to reject). Anything else unusable is named on an `Ignored:` line.
+- **Search skips the turn in progress** — the agent's own question no longer comes back as the first result, and no longer hides an answer that only exists on an edited or retried branch from the fallback.
+- **No more silently dropped params** — when a call sets a param its action cannot use (e.g. `query` next to `expand`), the output names it on the first line. Default values such as `page: 1` are not reported.
+
+### Changed
+
+- **Clearer `vcc_recall` description** — lists the actions that each take a whole call (query, range, expand, touched, `#N:path`) apart from the params that work with all of them (page, scope), and says where `#N` comes from.
+
+### Performance
+
+- **Keyword search about 2x faster on large sessions** — each query term is compiled once instead of once per message, with identical results. A long query on a 17k-message session had hit the 3 s search limit under load.
+
+### Internal
+
+- `vcc_recall` and `/pi-vcc-recall` share one pipeline (`src/core/recall-request.ts`, `src/core/recall-run.ts`): one place picks the action, scope is applied once, and the command no longer copies the tool's search and paging code. Replaying 1,086 real recall calls gives byte-identical output apart from the new note.
+
 ### Fixes
 
 - **The recall note no longer stacks up** — since 0.3.14 the closing "Use `vcc_recall` …" note was wrapped across two lines, so the next compaction did not recognise it, kept it inside the transcript and added another: one more note per compaction (a third of the summaries in the maintainer's own sessions carried 2 to 4). Every copy is now removed before merging, which also cleans summaries written by older versions, and the freed lines go back to the transcript.
