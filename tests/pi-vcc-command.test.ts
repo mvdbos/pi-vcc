@@ -184,6 +184,18 @@ describe("registerPiVccCommand", () => {
     expect(notifyCalls).toEqual([{ msg: "Nothing to compact", level: "warning" }]);
   });
 
+  test("explains Pi's 'session too small' instead of reporting a failure", async () => {
+    const { invoke, compactCalls, notifyCalls } = createHarness();
+
+    await invoke("keep:0");
+    compactCalls[0].onError?.(new Error("Nothing to compact (session too small)"));
+
+    expect(notifyCalls).toHaveLength(1);
+    expect(notifyCalls[0].level).toBe("warning");
+    expect(notifyCalls[0].msg).toContain("compaction.keepRecentTokens");
+    expect(notifyCalls[0].msg).not.toContain("failed");
+  });
+
   test("normalizes huge keep tokens to a safe integer instruction", async () => {
     const { invoke, compactCalls } = createHarness();
 
